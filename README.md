@@ -1,5 +1,27 @@
 <!-- markdownlint-disable -->
 
+> ## ⚠️ 本仓库是基于原项目的二次修改版
+>
+> 本仓库由 [hgtaoxx](https://github.com/hgtaoxx) 基于 [秋枫zsp / LiteNote](https://github.com/SeaZhusp/LiteNote) 修改，
+> **并非官方版本**。原项目版权归原作者所有，遵循 [MIT License](LICENSE)。
+>
+> **数据存放与原版完全隔离**：`identifier`、`productName`、WebDAV 默认远端路径均已与原版分开，
+> 因此本版**可与原版同时安装、互不影响**。
+>
+> 与原版相比的主要改动：
+>
+> - 时钟区紧凑化，农历独立成行并与公历右对齐，点击可切换秒数显示
+> - 待办列表行距与内边距收紧，重要程度圆点改为实心
+> - 新增「内容字号」「内容字体」设置（仅影响待办正文，底部栏固定不跟随）
+> - 专注模式重构：四种状态明确、正方形窗口、更可靠的尺寸锁定
+> - 新增鼠标穿透功能（托盘菜单同步）
+> - 设置面板新增 3 套浅色主题：浅黄色 / 浅灰色 / 浅粉色（共 6 套）
+> - 设置面板三个标签页统一固定高度；开关缩小至 3/4；下拉空间不足时自动向上展开
+> - 周历竖向空间压缩至 75%
+> - 修复多处窗口 API 因缺少 Tauri v2 权限声明而静默失败的问题
+>
+> 原作者仓库：<https://github.com/SeaZhusp/LiteNote>
+
 <div align="center">
 
 <img src="./src-tauri/icons/icon.png" width="120" alt="轻签图标">
