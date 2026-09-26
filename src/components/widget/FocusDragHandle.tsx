@@ -1,8 +1,22 @@
-/** 专注模式顶部拖拽条：窗口高度贴内容时仍保留可拖区域 */
-export function FocusDragHandle() {
+interface FocusDragHandleProps {
+  /**
+   * 是否可拖动窗口。
+   * 鼠标穿透状态下窗口不允许移动 → 传 false：这条占位保留但去掉拖拽区域，
+   * 这样高度不变，切换穿透时文字不会上下跳动。
+   */
+  draggable?: boolean;
+}
+
+/** 专注模式顶部拖拽条：始终占位，按需决定能否拖动 */
+export function FocusDragHandle({ draggable = true }: FocusDragHandleProps) {
   return (
     <div
-      className="flex h-4 shrink-0 cursor-grab items-center justify-center active:cursor-grabbing"
+      className={
+        "flex h-4 shrink-0 items-center justify-center " +
+        (draggable
+          ? "cursor-grab active:cursor-grabbing"
+          : "ln-no-drag-handle cursor-default")
+      }
       data-tauri-drag-region
       aria-hidden
     >

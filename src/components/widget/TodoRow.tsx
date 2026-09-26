@@ -9,6 +9,23 @@ import { formatRecurrence, computeNextDueDate } from "@/lib/recurrence";
 import type { TodoItem } from "@/types/todo";
 import { useNow } from "@/hooks/useNow";
 
+/**
+ * 内容区（待办行）排版规范 —— 完整模式与专注模式共用：
+ *   · 字号来自设置里的「内容字号」（WidgetShell 写成 CSS 变量 --ln-content-font-size），
+ *     14px 只是变量缺失时的兜底；单行 / 多行完全一致
+ *   · 行距 1.6 倍：随字号缩放，多行时比 1.5 更舒展
+ *   · 上下内边距各 6px；多行自动换行、高度弹性增长
+ *   · 用内联样式固定字号 / 行高 / 字体：显示态与编辑态 textarea 必须完全一致。
+ *     表单控件默认 font 与 padding 不受 Tailwind preflight 完全重置（v4 不再清零 padding），
+ *     只靠 class 会让编辑时的字看起来更大。
+ */
+const TODO_TEXT_STYLE: React.CSSProperties = {
+  fontSize: "var(--ln-content-font-size, 14px)",
+  lineHeight: 1.6,
+  fontFamily: "var(--ln-content-font-family, inherit)",
+};
+const TODO_ROW_PAD_Y = "py-1.5";
+
 interface TodoRowProps {
   todo: TodoItem;
   locale: Locale;
@@ -50,8 +67,8 @@ function FocusTodoRow({
   return (
     <div
       data-tauri-no-drag
-      className="flex min-h-12 cursor-default items-center gap-1 px-2 sm:px-3"
-      style={{ borderBottom: `1px solid var(--ln-theme-border-light)` }}
+      className="flex cursor-default items-center gap-1 px-2 sm:px-3"
+      style={{ borderBottom: `1px solid var(--ln-theme-border)` }}
     >
       {todo.isRecurring ? (
         <button
@@ -66,8 +83,8 @@ function FocusTodoRow({
           }}
         >
           <span
-            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full border bg-transparent"
-            style={{ borderColor: accent }}
+            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full"
+            style={{ background: accent }}
           />
           {/* 循环角标 */}
           <span
@@ -89,15 +106,20 @@ function FocusTodoRow({
           }}
         >
           <span
-            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full border bg-transparent"
-            style={{ borderColor: accent }}
+            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full"
+            style={{ background: accent }}
           />
         </button>
       )}
-      <div className="flex min-w-0 flex-1 flex-col py-2">
+      {/*
+        正文与完整模式共用同一套排版令牌（TODO_TEXT_STYLE / TODO_ROW_PAD_Y），
+        圆点标记也与完整模式一致；多行内容同样换行完整显示。
+        窗口高度改由渲染后实测得出，所以这里不再固定单行。
+      */}
+      <div className={`flex min-w-0 flex-1 flex-col ${TODO_ROW_PAD_Y}`}>
         <span
-          className="whitespace-pre-wrap text-sm leading-snug"
-          style={{ color: "var(--ln-theme-text)" }}
+          className="whitespace-pre-wrap break-words"
+          style={{ color: "var(--ln-theme-text)", ...TODO_TEXT_STYLE }}
         >
           {todo.text || (locale === "zh-CN" ? "（空）" : "(empty)")}
         </span>
@@ -169,6 +191,15 @@ function ManagementTodoRow({
     }
   }, [editing]);
 
+  // 编辑态高度自适应：换行后行数变多时输入框跟着长高，避免出现内部滚动条
+  useEffect(() => {
+    if (!editing) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [editing, todo.text]);
+
   const style = {
     transform: CSS.Transform.toString(sortable.transform),
     transition: sortable.transition,
@@ -185,13 +216,13 @@ function ManagementTodoRow({
         onContextMenu(e);
       }}
       className={
-        "flex min-h-12 cursor-default items-center gap-1 px-2 touch-none sm:px-3 " +
+        "flex cursor-default items-center gap-1 px-2 touch-none sm:px-3 " +
         (sortable.isDragging ? "opacity-0" : "") +
         (!selected ? " hover:bg-[var(--ln-theme-surface-hover)]" : "")
       }
       style={{
         ...style,
-        borderBottom: `1px solid var(--ln-theme-border-light)`,
+        borderBottom: `1px solid var(--ln-theme-border)`,
         background: selected ? "var(--ln-theme-surface-active)" : "transparent",
       }}
     >
@@ -213,8 +244,8 @@ function ManagementTodoRow({
           }}
         >
           <span
-            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full border bg-transparent"
-            style={{ borderColor: accent }}
+            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full"
+            style={{ background: accent }}
           />
           <span
             className="pointer-events-none absolute -right-0.5 -top-0.5 text-[0.6rem] leading-none"
@@ -241,14 +272,16 @@ function ManagementTodoRow({
         >
           <span
             className={
-              "flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full border text-[0.5rem] font-semibold leading-none " +
-              (todo.completed ? "border-transparent text-white" : "bg-transparent")
+              "flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full text-[0.5rem] font-semibold leading-none" +
+              (todo.completed ? " text-white" : "")
             }
-            style={
-              todo.completed
-                ? { background: accent, boxShadow: "inset 0 0 0 1px rgb(255 255 255 / 0.2)" }
-                : { borderColor: accent }
-            }
+            style={{
+              background: accent,
+              // 已完成：内描边 + 勾号，与未完成的纯实心点区分
+              boxShadow: todo.completed
+                ? "inset 0 0 0 1px rgb(255 255 255 / 0.2)"
+                : undefined,
+            }}
           >
             {todo.completed ? "✓" : null}
           </span>
@@ -257,7 +290,7 @@ function ManagementTodoRow({
       <button
         type="button"
         data-tauri-no-drag
-        className="flex min-w-0 flex-1 items-center py-1 text-left cursor-pointer bg-transparent border-0"
+        className="flex min-w-0 flex-1 items-center text-left cursor-pointer bg-transparent border-0"
         onClick={onSelect}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
@@ -266,13 +299,14 @@ function ManagementTodoRow({
           }
         }}
       >
+        {/* 编辑态文本框与显示态完全对齐：rows=1 + py-1.5 → 单行也是 33px，多行由下方 effect 自动增高 */}
         {editing ? (
           <textarea
             ref={textareaRef}
             data-tauri-no-drag
-            className="min-h-10 w-0 flex-1 resize-none bg-transparent text-sm leading-snug outline-none ring-0"
-            style={{ color: "var(--ln-theme-text)" }}
-            rows={2}
+            className="w-0 flex-1 resize-none bg-transparent py-1.5 outline-none ring-0"
+            style={{ color: "var(--ln-theme-text)", ...TODO_TEXT_STYLE }}
+            rows={1}
             value={todo.text}
             onChange={(e) => onChangeText(e.target.value)}
             onBlur={onEndEdit}
@@ -292,13 +326,13 @@ function ManagementTodoRow({
             }}
           />
         ) : (
-          <div className="flex min-w-0 flex-1 flex-col py-0.5">
+          <div className={`flex min-w-0 flex-1 flex-col ${TODO_ROW_PAD_Y}`}>
             <span
               className={
-                "whitespace-pre-wrap text-sm leading-snug" +
+                "whitespace-pre-wrap break-words" +
                 (todo.completed && !todo.isRecurring ? " opacity-50 line-through" : "")
               }
-              style={{ color: "var(--ln-theme-text)" }}
+              style={{ color: "var(--ln-theme-text)", ...TODO_TEXT_STYLE }}
             >
               {todo.text || (locale === "zh-CN" ? "（空）" : "(empty)")}
             </span>

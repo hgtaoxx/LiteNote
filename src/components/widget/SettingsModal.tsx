@@ -3,7 +3,17 @@ import { createPortal } from "react-dom";
 import type { Locale, LocaleMode } from "@/i18n";
 import type { MessageKey } from "@/i18n/messages";
 import { t } from "@/i18n";
-import type { ThemeId } from "@/lib/db";
+import {
+  CONTENT_FONT_SIZE_MAX,
+  CONTENT_FONT_SIZE_MIN,
+  DEFAULT_SETTINGS,
+  type ThemeId,
+} from "@/lib/db";
+import {
+  CONTENT_FONT_IDS,
+  resolveContentFontStack,
+  type ContentFontId,
+} from "@/lib/contentFonts";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { webdavGetConfig, webdavSetConfig, webdavTest, webdavSyncNow, webdavRestore } from "@/lib/webdav";
 
@@ -24,6 +34,12 @@ interface SettingsModalProps {
   onSetTheme: (t: ThemeId) => void;
   reminderMode: "popup" | "system";
   onSetReminderMode: (m: "popup" | "system") => void;
+  /** 内容（待办正文）字号 px */
+  contentFontSize: number;
+  onSetContentFontSize: (v: number) => void;
+  /** 内容（待办正文）字体 */
+  contentFontFamily: ContentFontId;
+  onSetContentFontFamily: (v: ContentFontId) => void;
   onClose: () => void;
 }
 
@@ -37,17 +53,25 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: 
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className="relative inline-flex h-6 w-10 shrink-0 items-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-sky-400"
+        className="relative inline-flex h-[18px] w-[30px] shrink-0 items-center rounded-full transition-colors focus-visible:outline-2 focus-visible:outline-sky-400"
         style={{ background: checked ? "#0ea5e9" : "var(--ln-theme-text-muted)" }}
       >
         <span
-          className="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"
-          style={{ transform: checked ? "translateX(20px)" : "translateX(4px)" }}
+          className="inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform"
+          style={{ transform: checked ? "translateX(15px)" : "translateX(3px)" }}
         />
       </button>
     </label>
   );
 }
+
+/**
+ * 下拉控件（收起时的当前值 + 展开后的选项）的字号（px）。
+ * 刻意用内联 style 而不是 Tailwind 类：类名一旦没被生成 / 没生效就会静默失效，
+ * 而内联样式优先级最高，必定落地。只影响下拉本身，左侧标签字号与它无关。
+ * 想再微调只改这一个数字。
+ */
+const SELECT_FONT_SIZE = 12.5;
 
 /* ──────────── CustomSelect 自定义下拉 ──────────── */
 function CustomSelect<T extends string>({
@@ -55,11 +79,14 @@ function CustomSelect<T extends string>({
   onChange,
   options,
   label,
+  fullWidth = false,
 }: {
   value: T;
   onChange: (v: T) => void;
-  options: readonly { value: T; label: string }[];
+  options: readonly { value: T; label: string; style?: React.CSSProperties }[];
   label: string;
+  /** true 时铺满父容器宽度（同步页那种「标签 + 整行控件」的布局用） */
+  fullWidth?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -91,39 +118,55 @@ function CustomSelect<T extends string>({
     return () => document.removeEventListener("keydown", handler);
   }, [open]);
 
-  const curLabel = options.find((o) => o.value === value)?.label ?? "";
+  const curOption = options.find((o) => o.value === value);
+  const curLabel = curOption?.label ?? "";
 
-  // 计算下拉面板位置
+  /**
+   * 计算下拉面板位置。
+   * 小部件窗口只有 360×620，靠底部的下拉（比如「内容字体」）如果只向下展开，
+   * 会被窗口下边缘截断、根本点不到 —— 所以下方空间不足时改为向上展开。
+   */
   const getPopStyle = useCallback((): React.CSSProperties => {
     if (!btnRef.current) return {};
     const rect = btnRef.current.getBoundingClientRect();
+    // 估算面板高度：每项约 28px + 内边距
+    const estimatedHeight = options.length * 28 + 8;
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const spaceAbove = rect.top - 8;
+    const openUp = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
     return {
       position: "fixed",
-      top: rect.bottom + 2,
       left: rect.left,
       width: rect.width,
       zIndex: 60,
+      // 向上展开时用 bottom 定位：面板底部贴着按钮上方，实际高度多少都不会越界
+      ...(openUp
+        ? { bottom: window.innerHeight - rect.top + 2, maxHeight: spaceAbove }
+        : { top: rect.bottom + 2, maxHeight: spaceBelow }),
     };
-  }, []);
+  }, [options.length]);
 
   return (
     <div className="flex items-center justify-between gap-2">
-      <span style={{ color: "var(--ln-theme-text)" }} className="text-xs shrink-0">
+      <span style={{ color: "var(--ln-theme-text)" }} className="text-[12.5px] shrink-0">
         {label}
       </span>
-      <div className="shrink-0 w-[108px]">
+      <div className={fullWidth ? "min-w-0 flex-1" : "shrink-0 w-[92px]"}>
         <button
           ref={btnRef}
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="w-full flex items-center justify-between gap-1 px-2 py-1 rounded-md text-xs leading-tight"
+          className="w-full flex items-center justify-between gap-1 px-1.5 py-0.5 rounded-md leading-tight"
           style={{
             background: "var(--ln-theme-surface)",
             color: "var(--ln-theme-text)",
             border: `1px solid var(--ln-theme-border)`,
+            fontSize: SELECT_FONT_SIZE,
           }}
         >
-          <span className="truncate">{curLabel}</span>
+          <span className="truncate" style={curOption?.style}>
+            {curLabel}
+          </span>
           <svg className="h-2.5 w-2.5 shrink-0 opacity-70" viewBox="0 0 12 12" fill="none">
             <path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
@@ -134,7 +177,7 @@ function CustomSelect<T extends string>({
             <div
               ref={listRef}
               style={getPopStyle()}
-              className="rounded-md overflow-hidden shadow-xl"
+              className="rounded-md overflow-y-auto shadow-xl"
             >
               <div
                 style={{
@@ -152,13 +195,15 @@ function CustomSelect<T extends string>({
                       onChange(opt.value);
                       setOpen(false);
                     }}
-                    className="w-full text-left px-2 py-1 text-xs leading-tight transition-colors"
+                    className="w-full text-left px-1.5 py-0.5 leading-tight transition-colors"
                     style={{
                       color: "var(--ln-theme-text)",
                       background:
                         opt.value === value
                           ? "var(--ln-theme-surface-active)"
                           : "transparent",
+                      fontSize: SELECT_FONT_SIZE,
+                      ...opt.style,
                     }}
                     onMouseEnter={(e) => {
                       if (opt.value !== value)
@@ -183,6 +228,15 @@ function CustomSelect<T extends string>({
 
 type SettingsTab = "general" | "shortcuts" | "sync";
 
+/** 内容字体 id → i18n key */
+const FONT_LABEL_KEYS: Record<ContentFontId, MessageKey> = {
+  system: "fontSystem",
+  hei: "fontHei",
+  song: "fontSong",
+  kai: "fontKai",
+  mono: "fontMono",
+};
+
 function SettingsTabs({
   tab,
   onTabChange,
@@ -197,7 +251,7 @@ function SettingsTabs({
   syncLabel: string;
 }) {
   const btn = (active: boolean) =>
-    `flex flex-1 items-center justify-center rounded px-2 text-[10px] leading-none transition-colors ${
+    `flex flex-1 items-center justify-center rounded px-2 text-[9.5px] leading-none transition-colors ${
       active ? "font-medium" : "hover:opacity-90"
     }`;
 
@@ -389,7 +443,7 @@ function EditableShortcutRow({
   return (
     <div className="flex items-center justify-between gap-2">
       <span
-        className="text-sm whitespace-nowrap overflow-hidden text-ellipsis"
+        className="min-w-0 text-sm whitespace-nowrap overflow-hidden text-ellipsis"
         style={{ color: "var(--ln-theme-text)" }}
         title={label}
       >
@@ -410,7 +464,7 @@ function EditableShortcutRow({
         <button
           type="button"
           onClick={() => { setCapturing(true); setError(false); }}
-          className="shrink-0 rounded px-2 py-0.5 text-xs font-mono transition min-w-[72px] text-center"
+          className="shrink-0 rounded px-2 py-0.5 text-[11px] font-mono transition min-w-[72px] text-center"
           style={{
             color: error
               ? "#f87171"
@@ -456,7 +510,10 @@ function SyncSettings({ locale }: { locale: Locale }) {
   const [url, setUrl] = useState("");
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
-  const [remotePath, setRemotePath] = useState("/LiteNote/litenote.json");
+  // 默认远端路径统一取自 DEFAULT_SETTINGS，避免和 Rust 侧 / 前端默认值三处脱节
+  const [remotePath, setRemotePath] = useState<string>(
+    DEFAULT_SETTINGS.webdavRemotePath,
+  );
   const [lastSync, setLastSync] = useState(0);
   const [busy, setBusy] = useState<"" | "test" | "sync">("");
   const [status, setStatus] = useState<string>("");
@@ -467,7 +524,7 @@ function SyncSettings({ locale }: { locale: Locale }) {
       setEnabled(cfg.enabled);
       setUrl(cfg.url);
       setUser(cfg.user);
-      setRemotePath(cfg.remotePath || "/LiteNote/litenote.json");
+      setRemotePath(cfg.remotePath || DEFAULT_SETTINGS.webdavRemotePath);
       setPass(cfg.pass || "");
       setLastSync(cfg.lastSync);
     } catch (e) {
@@ -582,8 +639,9 @@ function SyncSettings({ locale }: { locale: Locale }) {
     flexShrink: 0,
   };
   const inputStyle: React.CSSProperties = {
-    width: "100%",
-    maxWidth: 260,
+    // 跟随界面宽度自适应，不再写死 260px 上限
+    flex: "1 1 0",
+    minWidth: 0,
     padding: "6px 8px",
     borderRadius: 6,
     fontSize: 13,
@@ -600,8 +658,9 @@ function SyncSettings({ locale }: { locale: Locale }) {
         {/* 同步方式：下拉，目前仅坚果云，预留扩展。默认已带入预设地址，无需手动切换 */}
         <div style={fieldWrap}>
           <span style={labelStyle}>{mk("syncMethod")}</span>
-          <div style={{ minWidth: 200, maxWidth: 260 }}>
+          <div style={{ flex: "1 1 0", minWidth: 0 }}>
             <CustomSelect
+              fullWidth
               label=""
               value="jianguoyun"
               onChange={(v) => {
@@ -617,7 +676,7 @@ function SyncSettings({ locale }: { locale: Locale }) {
         <div style={fieldWrap}>
           <span style={labelStyle}>{mk("syncFreq")}</span>
           <span
-            className="text-xs"
+            className="min-w-0 text-xs"
             style={{ color: "var(--ln-theme-text-secondary)", textAlign: "right" }}
           >
             {mk("syncFreqHint")}
@@ -720,6 +779,10 @@ export function SettingsModal({
   onSetTheme,
   reminderMode,
   onSetReminderMode,
+  contentFontSize,
+  onSetContentFontSize,
+  contentFontFamily,
+  onSetContentFontFamily,
   onClose,
 }: SettingsModalProps) {
   const mk = (key: MessageKey) => t(locale, key);
@@ -750,7 +813,7 @@ export function SettingsModal({
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
       <div
-        className="flex w-[320px] max-h-[90vh] flex-col rounded-lg px-5 py-5 shadow-2xl"
+        className="flex w-[88%] max-w-[440px] max-h-[90vh] flex-col rounded-lg px-5 py-5 shadow-2xl"
         style={{ background: "var(--ln-theme-bg)", backdropFilter: "var(--ln-theme-backdrop)" }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -779,14 +842,19 @@ export function SettingsModal({
           syncLabel={mk("syncTab")}
         />
 
-        <div className="min-h-[300px] overflow-y-auto">
+        {/* 三个标签页共用同一个固定高度的内容区 —— 高度不一致会让切换时面板"跳大小"。
+            取 340px 是为了容纳内容最多的「常规」页；窗口很矮时用 max-h 兜住，不会溢出。 */}
+        <div
+          className="h-[340px] max-h-[calc(90vh-140px)] overflow-y-auto overflow-x-auto"
+          style={{ scrollbarGutter: "stable" }}
+        >
         {tab === "sync" ? (
           <SyncSettings locale={locale} />
         ) : tab === "general" ? (
           <>
         {/* 外观 */}
-        <section className="mb-5">
-          <div className="flex items-center gap-3">
+        <section className="mb-3">
+          <div className="flex items-center gap-2">
             <span style={{ color: "var(--ln-theme-text)", whiteSpace: "nowrap" }} className="text-sm shrink-0">
               {mk("opacityLabel")}
             </span>
@@ -796,7 +864,7 @@ export function SettingsModal({
               max={100}
               value={Math.round(panelOpacity * 100)}
               onChange={(e) => onPanelOpacityChange(Number(e.target.value) / 100)}
-              className="flex-1 h-5 rounded-full appearance-none cursor-pointer bg-transparent"
+              className="flex-1 h-4 rounded-full appearance-none cursor-pointer bg-transparent"
               style={{
                 WebkitAppearance: "none",
                 appearance: "none" as React.CSSProperties["appearance"],
@@ -862,7 +930,7 @@ export function SettingsModal({
         <div className="mb-3" style={{ borderTop: `1px solid var(--ln-theme-border-light)` }} />
 
         {/* 提醒方式 */}
-        <section className="mb-3">
+        <section className="mb-1.5">
           <CustomSelect
             label={mk("reminderModeLabel")}
             value={reminderMode}
@@ -873,10 +941,10 @@ export function SettingsModal({
             ]}
           />
         </section>
-        <div className="mb-3" style={{ borderTop: `1px solid var(--ln-theme-border-light)` }} />
+        <div className="mb-1.5" style={{ borderTop: `1px solid var(--ln-theme-border-light)` }} />
 
         {/* 主题 */}
-        <section className="mb-3">
+        <section className="mb-1.5">
           <CustomSelect
             label={mk("themeLabel")}
             value={theme}
@@ -885,6 +953,9 @@ export function SettingsModal({
               { value: "glass" as const, label: mk("themeGlass") },
               { value: "dark" as const, label: mk("themeDark") },
               { value: "light" as const, label: mk("themeLight") },
+              { value: "yellow" as const, label: mk("themeYellow") },
+              { value: "gray" as const, label: mk("themeGray") },
+              { value: "pink" as const, label: mk("themePink") },
             ]}
           />
         </section>
@@ -901,6 +972,54 @@ export function SettingsModal({
               { value: "en" as const, label: mk("langEn") },
             ]}
           />
+        </section>
+
+        {/* 分隔线 */}
+        <div className="my-3" style={{ borderTop: `1px solid var(--ln-theme-border-light)` }} />
+
+        {/* 内容字体：每个选项用它自己的字体渲染，方便直接预览效果 */}
+        <section className="mb-3">
+          <CustomSelect
+            label={mk("contentFontFamilyLabel")}
+            value={contentFontFamily}
+            onChange={onSetContentFontFamily}
+            options={CONTENT_FONT_IDS.map((id) => ({
+              value: id,
+              label: mk(FONT_LABEL_KEYS[id]),
+              style: { fontFamily: resolveContentFontStack(id) },
+            }))}
+          />
+        </section>
+
+        {/* 内容字号：只影响待办正文，界面其它字体 / 字号一律不变 */}
+        <section>
+          <div className="flex items-center gap-2">
+            <span
+              style={{ color: "var(--ln-theme-text)", whiteSpace: "nowrap" }}
+              className="text-sm shrink-0"
+            >
+              {mk("contentFontLabel")}
+            </span>
+            <input
+              type="range"
+              min={CONTENT_FONT_SIZE_MIN}
+              max={CONTENT_FONT_SIZE_MAX}
+              step={0.5}
+              value={contentFontSize}
+              onChange={(e) => onSetContentFontSize(Number(e.target.value))}
+              className="flex-1 h-4 rounded-full appearance-none cursor-pointer bg-transparent"
+              style={{
+                WebkitAppearance: "none",
+                appearance: "none" as React.CSSProperties["appearance"],
+              }}
+            />
+            <span
+              className="text-xs w-9 text-right shrink-0"
+              style={{ color: "var(--ln-theme-text-secondary)" }}
+            >
+              {contentFontSize}px
+            </span>
+          </div>
         </section>
           </>
         ) : (

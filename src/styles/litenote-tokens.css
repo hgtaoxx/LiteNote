@@ -120,3 +120,84 @@
   --ln-todo-p-important: #ea580c;
   --ln-todo-p-urgent: #dc2626;
 }
+
+/* 浅黄主题（琥珀色系，暖） */
+:root[data-theme="yellow"] {
+  --ln-theme-bg: #fffbeb;
+  --ln-theme-backdrop: none;
+  --ln-theme-surface: #fef3c7;
+  --ln-theme-surface-hover: #fde68a;
+  --ln-theme-surface-active: #fcd34d;
+  --ln-theme-text: #78350f;
+  --ln-theme-text-secondary: #a16207;
+  --ln-theme-text-muted: #ca8a04;
+  --ln-theme-border: #fde68a;
+  --ln-theme-border-light: #fef3c7;
+  --ln-theme-today: #b45309;
+  --ln-theme-today-bg: rgba(180, 83, 9, 0.1);
+  --ln-theme-selected-bg: #fcd34d;
+  --ln-theme-header-border: #fde68a;
+  --ln-theme-overlay: rgba(0, 0, 0, 0.1);
+  --ln-scrollbar-thumb: rgba(161, 98, 7, 0.3);
+  --ln-scrollbar-thumb-hover: rgba(161, 98, 7, 0.5);
+
+  /* 暖底上加深待办颜色，避免黄色圆点"融进背景" */
+  --ln-todo-p-none: #a8a29e;
+  --ln-todo-p-attention: #d97706;
+  --ln-todo-p-important: #ea580c;
+  --ln-todo-p-urgent: #dc2626;
+}
+
+/* 浅灰主题（中性灰；底色刻意比「浅色」的 #f8fafc 深两档，避免两者看起来一样） */
+:root[data-theme="gray"] {
+  --ln-theme-bg: #e5e7eb;
+  --ln-theme-backdrop: none;
+  /* 控件比底色更浅 —— 与玻璃 / 深色 / 浅色三个主题保持同一套明暗关系 */
+  --ln-theme-surface: #f3f4f6;
+  --ln-theme-surface-hover: #e5e7eb;
+  --ln-theme-surface-active: #d1d5db;
+  --ln-theme-text: #1f2937;
+  --ln-theme-text-secondary: #4b5563;
+  --ln-theme-text-muted: #6b7280;
+  --ln-theme-border: #c9ced6;
+  --ln-theme-border-light: #d1d5db;
+  --ln-theme-today: #15803d;
+  --ln-theme-today-bg: rgba(21, 128, 61, 0.12);
+  --ln-theme-selected-bg: #d1d5db;
+  --ln-theme-header-border: #c9ced6;
+  --ln-theme-overlay: rgba(0, 0, 0, 0.12);
+  --ln-scrollbar-thumb: rgba(75, 85, 99, 0.35);
+  --ln-scrollbar-thumb-hover: rgba(75, 85, 99, 0.55);
+
+  /* 底更灰了，待办色也整体压深一档，保证对比度 */
+  --ln-todo-p-none: #4b5563;
+  --ln-todo-p-attention: #b45309;
+  --ln-todo-p-important: #c2410c;
+  --ln-todo-p-urgent: #b91c1c;
+}
+
+/* 浅粉主题（玫粉色系，暖） */
+:root[data-theme="pink"] {
+  --ln-theme-bg: #fdf2f8;
+  --ln-theme-backdrop: none;
+  --ln-theme-surface: #fce7f3;
+  --ln-theme-surface-hover: #fbcfe8;
+  --ln-theme-surface-active: #f9a8d4;
+  --ln-theme-text: #831843;
+  --ln-theme-text-secondary: #be185d;
+  --ln-theme-text-muted: #f472b6;
+  --ln-theme-border: #fbcfe8;
+  --ln-theme-border-light: #fce7f3;
+  --ln-theme-today: #be185d;
+  --ln-theme-today-bg: rgba(190, 24, 93, 0.1);
+  --ln-theme-selected-bg: #f9a8d4;
+  --ln-theme-header-border: #fbcfe8;
+  --ln-theme-overlay: rgba(0, 0, 0, 0.1);
+  --ln-scrollbar-thumb: rgba(190, 24, 93, 0.3);
+  --ln-scrollbar-thumb-hover: rgba(190, 24, 93, 0.5);
+
+  --ln-todo-p-none: #a1a1aa;
+  --ln-todo-p-attention: #d97706;
+  --ln-todo-p-important: #ea580c;
+  --ln-todo-p-urgent: #dc2626;
+}

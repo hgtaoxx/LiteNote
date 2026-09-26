@@ -1,10 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import type { LocaleMode } from "@/i18n";
+import type { ContentFontId } from "@/lib/contentFonts";
 import {
   loadSettings,
   saveSetting,
   DEFAULT_SETTINGS,
+  CONTENT_FONT_SIZE_MIN,
+  CONTENT_FONT_SIZE_MAX,
   type ThemeId,
 } from "@/lib/db";
 
@@ -12,7 +15,14 @@ import {
 
 export interface SettingsState {
   clockCollapsed: boolean;
+  showSeconds: boolean;
   weekCalendarCollapsed: boolean;
+  /** 鼠标穿透：开启后窗口忽略鼠标事件，只能从托盘关闭 */
+  mousePassthrough: boolean;
+  /** 内容（待办正文）字号 px */
+  contentFontSize: number;
+  /** 内容（待办正文）字体 */
+  contentFontFamily: ContentFontId;
   panelOpacity: number;
   localeMode: LocaleMode;
   alwaysOnTop: boolean;
@@ -35,8 +45,12 @@ export interface SettingsActions {
   setPanelOpacity: (v: number) => void;
   setLocaleMode: (m: LocaleMode) => void;
   setClockCollapsed: (v: boolean) => void;
+  setShowSeconds: (v: boolean) => void;
   setWeekCalendarCollapsed: (v: boolean) => void;
   setAlwaysOnTop: (v: boolean) => void;
+  setMousePassthrough: (v: boolean) => void;
+  setContentFontSize: (v: number) => void;
+  setContentFontFamily: (v: ContentFontId) => void;
   setAutoStart: (v: boolean) => void;
   setTheme: (t: ThemeId) => void;
   setReminderMode: (m: "popup" | "system") => void;
@@ -136,6 +150,16 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
       );
     },
 
+    setShowSeconds: (v) => {
+      set({ showSeconds: v });
+      dbWrite(
+        saveSetting("showSeconds", v),
+        "saveSetting(showSeconds)",
+        (msg) => set({ lastError: msg }),
+        emitSettingsChanged,
+      );
+    },
+
     setWeekCalendarCollapsed: (v) => {
       set({ weekCalendarCollapsed: v });
       dbWrite(
@@ -151,6 +175,17 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
       invoke("set_always_on_top", { enabled: v }).catch((e) => {
         const msg = e instanceof Error ? e.message : String(e);
         set({ lastError: `设置置顶失败: ${msg}` });
+        void useSettingsStore.getState().reloadFromDb();
+      });
+    },
+
+    // 鼠标穿透走 Rust 命令：需要同时写 DB、设置窗口忽略鼠标事件、刷新托盘勾选状态。
+    // 前端按钮只用于开启；关闭必须从托盘操作（窗口已点不到）。
+    setMousePassthrough: (v) => {
+      set({ mousePassthrough: v });
+      invoke("set_mouse_passthrough", { enabled: v }).catch((e) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        set({ lastError: `设置鼠标穿透失败: ${msg}` });
         void useSettingsStore.getState().reloadFromDb();
       });
     },
@@ -201,6 +236,32 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
         set({ lastError: `切换模式失败: ${msg}` });
         void useSettingsStore.getState().reloadFromDb();
       });
+    },
+
+    // 内容字号：只影响待办正文与底部栏，界面其它字号不变
+    setContentFontSize: (v) => {
+      const val = Math.min(
+        CONTENT_FONT_SIZE_MAX,
+        Math.max(CONTENT_FONT_SIZE_MIN, Math.round(v * 2) / 2),
+      );
+      set({ contentFontSize: val });
+      dbWrite(
+        saveSetting("contentFontSize", val),
+        "saveSetting(contentFontSize)",
+        (msg) => set({ lastError: msg }),
+        emitSettingsChanged,
+      );
+    },
+
+    // 内容字体：同样只影响待办正文
+    setContentFontFamily: (v) => {
+      set({ contentFontFamily: v });
+      dbWrite(
+        saveSetting("contentFontFamily", v),
+        "saveSetting(contentFontFamily)",
+        (msg) => set({ lastError: msg }),
+        emitSettingsChanged,
+      );
     },
 
     setShortcut: (key, value) => {

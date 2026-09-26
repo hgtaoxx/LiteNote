@@ -84,7 +84,8 @@ function DayCell({
       onClick={() => onSelect(ts)}
       className={[
         "relative flex flex-col items-center justify-center",
-        "flex-1 max-w-[52px] h-14 rounded-lg text-xs transition",
+        // 竖向空间主要来自这里：原 h-14(56px) 的 75% → 42px
+        "flex-1 max-w-[52px] h-[42px] rounded-lg text-xs transition",
         isOver
           ? "bg-sky-500/30 ring-1 ring-sky-400/50 scale-105"
           : selected
@@ -102,8 +103,8 @@ function DayCell({
         {label}
       </span>
 
-      {/* 日期 MM-DD */}
-      <span className={`mt-1 text-[11px] leading-none ${
+      {/* 日期 MM-DD（行间距 mt-1(4px) → 3px，同为 75%） */}
+      <span className={`mt-[3px] text-[11px] leading-none ${
         selected ? "font-semibold" : "font-normal"
       }`}>
         {fmtMMDD(ts)}

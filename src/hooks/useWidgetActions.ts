@@ -74,6 +74,8 @@ export function useWidgetActions(locale: Locale) {
   const handleEndEdit = useCallback(() => {
     if (editingId) commitTodoEdit(editingId);
     setEditingId(null);
+    // 退出编辑后一并取消选中：否则该行会一直保留选中底色（看起来发灰、与其它行不一致）
+    setSelectedId(null);
   }, [editingId, commitTodoEdit]);
 
   const handleClearCompleted = useCallback(() => {

@@ -19,6 +19,8 @@ import { resolveLocale, t } from "@/i18n";
 import { AboutModal } from "./AboutModal";
 import { useWidgetActions } from "@/hooks/useWidgetActions";
 import { useFocusWindowSize } from "@/hooks/useFocusWindowSize";
+import { resolveWindowMode } from "@/lib/windowMode";
+import { resolveContentFontStack } from "@/lib/contentFonts";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTodoStore } from "@/stores/todoStore";
 import type { TodoColorId } from "@/types/todo";
@@ -56,6 +58,14 @@ export function WidgetShell() {
   const setLocaleMode = useSettingsStore((s) => s.setLocaleMode);
   const clockCollapsed = useSettingsStore((s) => s.clockCollapsed);
   const setClockCollapsed = useSettingsStore((s) => s.setClockCollapsed);
+  const showSeconds = useSettingsStore((s) => s.showSeconds);
+  const setShowSeconds = useSettingsStore((s) => s.setShowSeconds);
+  const mousePassthrough = useSettingsStore((s) => s.mousePassthrough);
+  const setMousePassthrough = useSettingsStore((s) => s.setMousePassthrough);
+  const contentFontSize = useSettingsStore((s) => s.contentFontSize);
+  const setContentFontSize = useSettingsStore((s) => s.setContentFontSize);
+  const contentFontFamily = useSettingsStore((s) => s.contentFontFamily);
+  const setContentFontFamily = useSettingsStore((s) => s.setContentFontFamily);
   const weekCalendarCollapsed = useSettingsStore((s) => s.weekCalendarCollapsed);
   const setWeekCalendarCollapsed = useSettingsStore((s) => s.setWeekCalendarCollapsed);
   const autoStart = useSettingsStore((s) => s.autoStart);
@@ -164,13 +174,48 @@ export function WidgetShell() {
     [todos],
   );
 
-  useFocusWindowSize(focusMode, focusActiveTodos.length, settingsInitialized);
+  // 模式判定统一走 resolveWindowMode（唯一来源），四种形态见 lib/windowMode.ts 的状态表
+  const windowMode = resolveWindowMode(focusMode, mousePassthrough);
 
-  // 进入专注模式时关闭编辑态与右键菜单
+  // 内容字号 / 内容字体下发为 CSS 变量，**只有待办正文（TodoRow）读它们**。
+  // 界面其余部分（顶栏、时钟区、底部栏、设置面板）固定用默认字体与字号，不跟随。
+  useEffect(() => {
+    const root = document.documentElement.style;
+    root.setProperty("--ln-content-font-size", `${contentFontSize}px`);
+    root.setProperty(
+      "--ln-content-font-family",
+      resolveContentFontStack(contentFontFamily),
+    );
+  }, [contentFontSize, contentFontFamily]);
+
+  useFocusWindowSize(focusMode, settingsInitialized, windowMode.sizeLocked);
+
+  // 鼠标穿透的**主要施加者是 Rust**（`apply_effective_passthrough`）：
+  // 托盘、快捷键、启动恢复都走它，且不依赖前端的 window 插件权限。
+  // 这里只做一次幂等兜底（同样的判定规则、同样的结果），
+  // 顺便在前端权限缺失时把错误打到 Console，避免像以前那样静默失败。
+  useEffect(() => {
+    if (!settingsInitialized) return;
+    void (async () => {
+      try {
+        await getCurrentWindow().setIgnoreCursorEvents(
+          windowMode.realPassthrough,
+        );
+      } catch (e) {
+        // 缺 core:window:allow-set-ignore-cursor-events 权限时会走到这里
+        console.warn("[LiteNote] 前端设置鼠标穿透失败（Rust 侧仍会生效）:", e);
+      }
+    })();
+  }, [settingsInitialized, windowMode.realPassthrough]);
+
+  // 进入专注模式时关闭编辑态、右键菜单与模态框。
+  // 专注模式不渲染这些 UI，不清掉的话切回完整模式会「突然又弹出来」。
   useEffect(() => {
     if (!focusMode) return;
     setMenu(null);
     handleEndEdit();
+    setShowSettings(false);
+    setShowAbout(false);
   }, [focusMode, setMenu, handleEndEdit]);
 
   // 当前拖拽中的待办 id（用于 DragOverlay）
@@ -298,8 +343,15 @@ export function WidgetShell() {
             style={bgLayerStyle}
           />
           {/* 内容层 - 文字永远清晰可见 */}
-          <div className="relative z-10 flex h-full min-h-0 w-full flex-col">
-            <FocusDragHandle />
+          <div
+            className={
+              "relative z-10 flex h-full min-h-0 w-full flex-col" +
+              /* 专注受限形态（专注 + 穿透）：内容不可选中 */
+              (windowMode.noSelect ? " select-none" : "")
+            }
+          >
+            {/* 拖拽条始终占位（高度不变、切换时文字不跳），受限形态下仅禁用拖动 */}
+            <FocusDragHandle draggable={windowMode.movable} />
             <TodoList
               focusMode
               locale={locale}
@@ -328,6 +380,8 @@ export function WidgetShell() {
           locale={locale}
           alwaysOnTop={alwaysOnTop}
           onToggleAlwaysOnTop={() => setAlwaysOnTop(!alwaysOnTop)}
+          mousePassthrough={mousePassthrough}
+          onEnableMousePassthrough={() => setMousePassthrough(true)}
           onOpenAbout={() => setShowAbout(true)}
           onOpenSettings={() => setShowSettings(true)}
           onHide={handleHide}
@@ -339,7 +393,13 @@ export function WidgetShell() {
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
-          {!clockCollapsed ? <ClockSection locale={locale} /> : null}
+          {!clockCollapsed ? (
+            <ClockSection
+              locale={locale}
+              showSeconds={showSeconds}
+              onToggleSeconds={() => setShowSeconds(!showSeconds)}
+            />
+          ) : null}
 
           {!weekCalendarCollapsed ? (
             <WeekCalendar
@@ -371,7 +431,9 @@ export function WidgetShell() {
                         ? "var(--ln-theme-text)"
                         : "var(--ln-theme-text-secondary)",
                       fontWeight: active ? 700 : 400,
-                      background: "transparent",
+                      background: active
+                        ? "var(--ln-theme-surface-active)"
+                        : "transparent",
                       borderRadius: "4px",
                     }}
                   >
@@ -439,6 +501,10 @@ export function WidgetShell() {
           onSetTheme={setTheme}
           reminderMode={reminderMode}
           onSetReminderMode={setReminderMode}
+          contentFontSize={contentFontSize}
+          onSetContentFontSize={setContentFontSize}
+          contentFontFamily={contentFontFamily}
+          onSetContentFontFamily={setContentFontFamily}
           onClose={() => setShowSettings(false)}
         />
 

@@ -9,19 +9,25 @@ interface HeaderBarProps {
   locale: Locale;
   alwaysOnTop: boolean;
   onToggleAlwaysOnTop: () => void;
+  /** 鼠标穿透是否已开启（开启后界面点不到，只能从托盘关闭） */
+  mousePassthrough: boolean;
+  /** 开启鼠标穿透（只用于开启，关闭走托盘） */
+  onEnableMousePassthrough: () => void;
   onOpenSettings: () => void;
   onOpenAbout: () => void;
   onHide: () => void;
 }
 
 const iconBtn =
-  "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-100/50";
+  "flex h-6 w-6 shrink-0 items-center justify-center rounded-lg transition hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-100/50";
 const iconStyle = { color: "var(--ln-theme-text)" } as React.CSSProperties;
 
 export function HeaderBar({
   locale,
   alwaysOnTop,
   onToggleAlwaysOnTop,
+  mousePassthrough,
+  onEnableMousePassthrough,
   onOpenSettings,
   onOpenAbout,
   onHide,
@@ -35,9 +41,10 @@ export function HeaderBar({
       .catch(() => setVersion(""));
   }, []);
 
+  // 顶栏高度压缩为原 h-11(44px) 的 75% → 33px；图标按钮同步缩为 h-6(24px)，否则会撑满整栏
   return (
     <header
-      className="flex h-11 shrink-0 cursor-grab select-none items-center px-1 active:cursor-grabbing"
+      className="flex h-[33px] shrink-0 cursor-grab select-none items-center px-1 active:cursor-grabbing"
       style={{ borderBottom: `1px solid var(--ln-theme-header-border)` }}
       data-tauri-drag-region
     >
@@ -56,6 +63,32 @@ export function HeaderBar({
         className="flex cursor-default items-center gap-0.5 pr-1"
         data-tauri-no-drag
       >
+        {/* 鼠标穿透：置于「帮助」左侧；开启后整个界面点不到，只能从托盘关闭 */}
+        <button
+          type="button"
+          className={iconBtn}
+          style={iconStyle}
+          title={mk(mousePassthrough ? "mousePassthroughOn" : "mousePassthrough")}
+          aria-label={mk("mousePassthrough")}
+          aria-pressed={mousePassthrough}
+          onClick={onEnableMousePassthrough}
+        >
+          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
+            {/* 光标箭头 + 斜杠：鼠标事件穿过窗口 */}
+            <path
+              d="M6 3.5v13l3.3-3.3 2.3 5.2 2.4-1.1-2.3-5.1H17L6 3.5Z"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M3.5 20.5 20.5 3.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
         <button
           type="button"
           className={iconBtn}
@@ -63,7 +96,7 @@ export function HeaderBar({
           title={mk("helpTitle")}
           onClick={onOpenAbout}
         >
-          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
             <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" />
             <line x1="12" y1="8" x2="12" y2="8.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             <line x1="12" y1="12" x2="12" y2="16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -76,7 +109,7 @@ export function HeaderBar({
           title={mk("settings")}
           onClick={onOpenSettings}
         >
-          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
             <path
               d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
               stroke="currentColor"
@@ -99,10 +132,10 @@ export function HeaderBar({
           aria-pressed={alwaysOnTop}
           onClick={onToggleAlwaysOnTop}
         >
-          <Icon name={alwaysOnTop ? "pushpin-fill" : "pushpin-line"} />
+          <Icon name={alwaysOnTop ? "pushpin-fill" : "pushpin-line"} className="h-3.5 w-3.5" />
         </button>
         <button type="button" className={iconBtn} style={iconStyle} title={mk("hideWindow")} onClick={onHide}>
-          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" aria-hidden>
+          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
             <path d="M6 12h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
         </button>

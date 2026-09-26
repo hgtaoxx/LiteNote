@@ -20,8 +20,11 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
 
-    /* Path aliases */
-    "baseUrl": ".",
+    /*
+      Path aliases。
+      刻意不写 baseUrl：TS 6.0 起已弃用，且在这个项目里本来就多余——
+      moduleResolution 为 "bundler" 时，paths 会自动相对本文件所在目录解析。
+    */
     "paths": {
       "@/*": ["./src/*"]
     }

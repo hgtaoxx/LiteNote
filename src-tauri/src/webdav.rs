@@ -24,8 +24,9 @@ use crate::{
     read_setting_string_app, SETTINGS_UPDATED_EVENT,
 };
 
-/// 远端文件名（存于用户配置的 remotePath 目录下，默认 /LiteNote/litenote.json）
-const DEFAULT_REMOTE_PATH: &str = "/LiteNote/litenote.json";
+/// 远端文件名（存于用户配置的 remotePath 目录下，默认 /zhangjianzoutianya/litenote.json）
+/// 刻意与原版的 /LiteNote/ 分开：否则两版会同步到同一个云端文件、互相覆盖数据
+const DEFAULT_REMOTE_PATH: &str = "/zhangjianzoutianya/litenote.json";
 
 /// 后台定时同步间隔（秒）
 const SYNC_POLL_INTERVAL_SECS: u64 = 300;
@@ -157,7 +158,7 @@ fn build_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| format!("HTTP 客户端创建失败: {e}"))
 }
 
-/// 确保远端目录存在（逐级 MKCOL）。remote_path 形如 /LiteNote/litenote.json
+/// 确保远端目录存在（逐级 MKCOL）。remote_path 形如 /zhangjianzoutianya/litenote.json
 fn ensure_remote_dir(client: &reqwest::blocking::Client, base: &str, auth: &reqwest::header::HeaderValue, remote_path: &str) -> Result<(), String> {
     // 取目录部分：去掉 remote_path 末尾的文件名
     let dir = match remote_path.trim_start_matches('/').rsplit_once('/') {

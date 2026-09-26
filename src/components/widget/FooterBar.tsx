@@ -23,13 +23,36 @@ export function FooterBar({
 }: FooterBarProps) {
   const mk = (key: MessageKey) => t(locale, key);
 
+  // 底栏高度 = 28px 按钮 + 上下各 4px = 36px。
+  // 行高固定 20px：这样调大「内容字号」时底栏高度不会跟着跳动。
   const btnBase =
-    "flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm transition";
+    "flex items-center gap-1 rounded-lg px-1.5 py-1 transition";
   const btnActive = `${btnBase} hover:bg-[var(--ln-theme-surface-hover)]`;
   const btnDisabled = `${btnBase} cursor-not-allowed`;
 
-  const btnStyle = { color: "var(--ln-theme-text)" };
-  const btnDisabledStyle = { color: "var(--ln-theme-text-muted)" };
+  /**
+   * 底栏属于「界面」，所以字号**固定 14px**、字体用界面默认字体，
+   * 不跟随设置里的「内容字号 / 内容字体」。
+   */
+  const FOOTER_FONT_SIZE = "14px";
+
+  const btnStyle: React.CSSProperties = {
+    color: "var(--ln-theme-text)",
+    fontSize: FOOTER_FONT_SIZE,
+    lineHeight: "20px",
+  };
+  const btnDisabledStyle: React.CSSProperties = {
+    color: "var(--ln-theme-text-muted)",
+    fontSize: FOOTER_FONT_SIZE,
+    lineHeight: "20px",
+  };
+
+  /** 图标用 em 跟随字号，字号调整时自动等比缩放 */
+  const iconStyle: React.CSSProperties = {
+    width: "1.05em",
+    height: "1.05em",
+    flexShrink: 0,
+  };
 
   return (
     <footer className="relative shrink-0" data-tauri-no-drag>
@@ -43,7 +66,7 @@ export function FooterBar({
         }}
       />
       {/* 内容层（文字清晰） */}
-      <div className="relative z-10 flex items-center justify-between gap-2 px-2 py-2">
+      <div className="relative z-10 flex items-center justify-between gap-2 px-2 py-1">
         <button
           type="button"
           title={mk("footerAddTooltip")}
@@ -52,7 +75,8 @@ export function FooterBar({
           style={btnStyle}
         >
           <svg
-            className="h-4 w-4 shrink-0 opacity-95"
+            className="opacity-95"
+            style={iconStyle}
             viewBox="0 0 24 24"
             fill="none"
             aria-hidden
@@ -75,7 +99,8 @@ export function FooterBar({
             style={btnStyle}
           >
             <svg
-              className="h-4 w-4 shrink-0 opacity-95"
+              className="opacity-95"
+            style={iconStyle}
               viewBox="0 0 24 24"
               fill="none"
               aria-hidden
@@ -107,7 +132,8 @@ export function FooterBar({
             style={clearCompletedDisabled ? btnDisabledStyle : btnStyle}
           >
             <svg
-              className="h-4 w-4 shrink-0 opacity-95"
+              className="opacity-95"
+            style={iconStyle}
               viewBox="0 0 24 24"
               fill="none"
               aria-hidden

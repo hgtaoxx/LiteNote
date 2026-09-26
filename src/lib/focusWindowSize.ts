@@ -1,27 +1,15 @@
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-/** 专注模式顶栏拖拽区高度（与 FocusDragHandle h-4 一致） */
-export const FOCUS_DRAG_HANDLE_HEIGHT = 16;
+/**
+ * 专注模式窗口尺寸 —— 宽度与完整模式一致，高度 = 宽度（**正方形**）。
+ * 不再按内容测量、按行高累加，也不随鼠标穿透状态变化。
+ */
+export const FOCUS_HEIGHT_RATIO = 1;
 
-/** 专注模式单行高度（与 FocusTodoRow min-h-12 一致） */
-export const FOCUS_ROW_HEIGHT = 48;
-
-/** 专注模式列表最多展示行数，超出在列表内滚动 */
-export const FOCUS_MAX_VISIBLE_ROWS = 5;
-
-/** 专注模式列表区最大高度（不含拖拽条） */
-export const FOCUS_MAX_LIST_HEIGHT = FOCUS_MAX_VISIBLE_ROWS * FOCUS_ROW_HEIGHT;
-
-/** 无未完成事项时列表区高度（不含拖拽条） */
-export const FOCUS_EMPTY_CONTENT_HEIGHT = 104;
-
-/** 无未完成事项时的窗口总高度 */
-export const FOCUS_EMPTY_HEIGHT =
-  FOCUS_DRAG_HANDLE_HEIGHT + FOCUS_EMPTY_CONTENT_HEIGHT;
-
-export const FOCUS_MIN_HEIGHT = FOCUS_DRAG_HANDLE_HEIGHT + FOCUS_ROW_HEIGHT;
-export const FOCUS_MAX_HEIGHT = FOCUS_DRAG_HANDLE_HEIGHT + FOCUS_MAX_LIST_HEIGHT;
+export function computeFocusWindowHeight(width: number): number {
+  return Math.round(width * FOCUS_HEIGHT_RATIO);
+}
 
 export const DEFAULT_FULL_WINDOW_WIDTH = 360;
 export const DEFAULT_FULL_WINDOW_HEIGHT = 620;
@@ -32,12 +20,18 @@ export const FULL_SIZE_MAX_HEIGHT = DEFAULT_FULL_WINDOW_HEIGHT * 2;
 
 export type WindowLogicalSize = { width: number; height: number };
 
-/** 完整模式窗口高度下限（低于此视为专注模式尺寸，不可写入 fullWindow*） */
+/**
+ * 是否像「完整模式」尺寸：完整模式高度不会恰好等于专注模式的正方形高度。
+ * 专注模式高度只由宽度推导（高度 = 宽度），因此可以直接排除。
+ *
+ * 已知副作用（可接受）：若用户把完整模式窗口手动拉成接近正方形，
+ * 会被误判为专注模式尺寸，下次启动回落到默认尺寸。容差 24px，命中范围很窄。
+ */
 export function isLikelyFullModeSize(size: WindowLogicalSize): boolean {
-  return size.height > FOCUS_MAX_HEIGHT + 24;
+  return Math.abs(size.height - computeFocusWindowHeight(size.width)) > 24;
 }
 
-/** 从 settings 解析完整模式尺寸，过滤专注模式高度与异常膨胀值 */
+/** 从 settings 解析完整模式尺寸，过滤专注模式尺寸与异常膨胀值 */
 export function resolveStoredFullSize(
   width: number | undefined,
   height: number | undefined,
@@ -52,10 +46,7 @@ export function resolveStoredFullSize(
       height: DEFAULT_FULL_WINDOW_HEIGHT,
     };
   }
-  if (
-    full.width > FULL_SIZE_MAX_WIDTH ||
-    full.height > FULL_SIZE_MAX_HEIGHT
-  ) {
+  if (full.width > FULL_SIZE_MAX_WIDTH || full.height > FULL_SIZE_MAX_HEIGHT) {
     return {
       width: DEFAULT_FULL_WINDOW_WIDTH,
       height: DEFAULT_FULL_WINDOW_HEIGHT,
@@ -69,13 +60,6 @@ export function isOversizedFullSize(size: WindowLogicalSize): boolean {
     isLikelyFullModeSize(size) &&
     (size.width > FULL_SIZE_MAX_WIDTH || size.height > FULL_SIZE_MAX_HEIGHT)
   );
-}
-
-export function computeFocusWindowHeight(activeCount: number): number {
-  if (activeCount <= 0) return FOCUS_EMPTY_HEIGHT;
-  const listHeight = activeCount * FOCUS_ROW_HEIGHT;
-  const total = FOCUS_DRAG_HANDLE_HEIGHT + listHeight;
-  return Math.min(FOCUS_MAX_HEIGHT, Math.max(FOCUS_MIN_HEIGHT, total));
 }
 
 export async function readWindowInnerSize(): Promise<WindowLogicalSize | null> {
@@ -100,10 +84,49 @@ export async function setWindowLogicalSize(size: WindowLogicalSize): Promise<voi
   }
 }
 
-export async function applyFocusWindowHeight(
-  activeCount: number,
-  width: number,
-): Promise<void> {
-  const height = computeFocusWindowHeight(activeCount);
-  await setWindowLogicalSize({ width, height });
+/** 设置窗口是否可手动缩放（专注模式锁死宽高比用） */
+export async function setWindowResizable(resizable: boolean): Promise<void> {
+  try {
+    await getCurrentWindow().setResizable(resizable);
+  } catch (e) {
+    console.warn("[LiteNote] 设置窗口可缩放失败:", e);
+  }
+}
+
+/**
+ * 锁死窗口尺寸：把最小 / 最大尺寸都设成同一个值。
+ * 只靠 setResizable(false) 对无边框透明窗口不一定能挡住拖边调整，min = max 才锁得住。
+ */
+export async function lockWindowSize(size: WindowLogicalSize): Promise<void> {
+  try {
+    const win = getCurrentWindow();
+    await win.setMinSize(new LogicalSize(size.width, size.height));
+    await win.setMaxSize(new LogicalSize(size.width, size.height));
+  } catch (e) {
+    console.warn("[LiteNote] 锁定窗口尺寸失败:", e);
+  }
+}
+
+/**
+ * 锁死「当前」窗口尺寸（先读取再锁定）。
+ * 用于专注模式 + 鼠标穿透：继承进入该状态时的尺寸，之后不能拉伸。
+ */
+export async function lockCurrentWindowSize(): Promise<void> {
+  const size = await readWindowInnerSize();
+  if (!size) return;
+  await lockWindowSize({
+    width: Math.round(size.width),
+    height: Math.round(size.height),
+  });
+}
+
+/** 解除尺寸锁定；恢复完整模式尺寸前必须先调用，否则会被上一步的 min/max 卡住 */
+export async function unlockWindowSize(): Promise<void> {
+  try {
+    const win = getCurrentWindow();
+    await win.setMaxSize(null);
+    await win.setMinSize(null);
+  } catch (e) {
+    console.warn("[LiteNote] 解除窗口尺寸锁定失败:", e);
+  }
 }

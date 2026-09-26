@@ -1,6 +1,7 @@
 import Database from "@tauri-apps/plugin-sql";
 import type { TodoItem } from "@/types/todo";
 import type { LocaleMode } from "@/i18n";
+import type { ContentFontId } from "@/lib/contentFonts";
 
 const DB_NAME = "sqlite:litenote.db";
 
@@ -11,12 +12,19 @@ let _dbInitPromise: Promise<Database> | null = null;
 
 // ──────────────── 设置项默认值（单一真实来源） ────────────────
 
-export type ThemeId = "glass" | "dark" | "light";
+export type ThemeId = "glass" | "dark" | "light" | "yellow" | "gray" | "pink";
 
 /** 所有设置项的默认值，作为唯一真实来源 */
 export const DEFAULT_SETTINGS = {
   clockCollapsed: true,
+  showSeconds: true,
   weekCalendarCollapsed: true,
+  /** 鼠标穿透：开启后窗口忽略鼠标事件，只能从托盘关闭 */
+  mousePassthrough: false,
+  /** 内容（待办正文）字号 px —— 界面其它字号不跟随，只有内容区读它 */
+  contentFontSize: 14,
+  /** 内容（待办正文）字体 —— 界面固定使用默认字体，不跟随 */
+  contentFontFamily: "system" as ContentFontId,
   panelOpacity: 0.88,
   localeMode: "system" as LocaleMode,
   alwaysOnTop: false,
@@ -33,13 +41,22 @@ export const DEFAULT_SETTINGS = {
   webdavEnabled: false,
   webdavUrl: "",
   webdavUser: "",
-  webdavRemotePath: "/LiteNote/litenote.json",
+  // 与 Rust 侧 DEFAULT_REMOTE_PATH 保持一致，且与原版 /LiteNote/ 分开
+  webdavRemotePath: "/zhangjianzoutianya/litenote.json",
 };
+
+/** 内容字号可选范围（px） */
+export const CONTENT_FONT_SIZE_MIN = 12;
+export const CONTENT_FONT_SIZE_MAX = 17;
 
 /** 设置项的运行时类型（非字面量） */
 export interface AppSettings {
   readonly clockCollapsed: boolean;
+  readonly showSeconds: boolean;
   readonly weekCalendarCollapsed: boolean;
+  readonly mousePassthrough: boolean;
+  readonly contentFontSize: number;
+  readonly contentFontFamily: ContentFontId;
   readonly panelOpacity: number;
   readonly localeMode: LocaleMode;
   readonly alwaysOnTop: boolean;

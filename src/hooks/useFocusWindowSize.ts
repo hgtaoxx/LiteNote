@@ -1,10 +1,14 @@
 import { useEffect, useRef } from "react";
 import { saveSetting } from "@/lib/db";
 import {
-  applyFocusWindowHeight,
+  computeFocusWindowHeight,
   DEFAULT_FULL_WINDOW_WIDTH,
+  lockCurrentWindowSize,
+  lockWindowSize,
   readWindowInnerSize,
   setWindowLogicalSize,
+  setWindowResizable,
+  unlockWindowSize,
   isLikelyFullModeSize,
   isOversizedFullSize,
   resolveStoredFullSize,
@@ -12,19 +16,29 @@ import {
 } from "@/lib/focusWindowSize";
 import { useSettingsStore } from "@/stores/settingsStore";
 
-const RESIZE_DEBOUNCE_MS = 150;
-
 /**
- * 专注模式：按未完成条数自动调整窗口高度；退出时恢复完整模式尺寸。
- * 进入专注前会将当前完整模式尺寸写入 settings（fullWindowWidth/Height）。
+ * 专注 / 完整模式的窗口尺寸与能力。
+ *
+ * **所有改窗口尺寸/可缩放/尺寸锁定的动作都集中在这一个有序的异步流程里**，
+ * 避免「启动修复」和「模式切换」两处各自改窗口而互相打架。
+ *
+ * 规则：
+ *   进入专注（含启动时就已经是专注）→ 记录完整模式尺寸 → 窗口调成正方形
+ *   专注 + 穿透 → 锁定当前尺寸、禁止缩放（继承现有大小，不重置尺寸）
+ *   专注、无穿透 → 解除锁定、允许缩放
+ *   退出专注     → 先解锁 → 恢复完整模式尺寸
+ *   启动即完整   → 修正 window-state 可能恢复的专注尺寸 / 异常膨胀尺寸
+ *
+ * @param sizeLocked 是否锁死尺寸，由 resolveWindowMode 推导（专注 + 鼠标穿透）
  */
 export function useFocusWindowSize(
   focusMode: boolean,
-  activeCount: number,
   settingsReady: boolean,
+  sizeLocked: boolean,
 ): void {
   const fullWindowWidth = useSettingsStore((s) => s.fullWindowWidth);
   const fullWindowHeight = useSettingsStore((s) => s.fullWindowHeight);
+  /** null 表示还没跑过（首次），用于区分「启动」与「模式切换」 */
   const prevFocusMode = useRef<boolean | null>(null);
   const focusWidthRef = useRef(DEFAULT_FULL_WINDOW_WIDTH);
   const fullSizeRef = useRef<WindowLogicalSize>(
@@ -32,7 +46,7 @@ export function useFocusWindowSize(
   );
   const didFullRestoreCheck = useRef(false);
 
-  // 同步 DB 中的完整模式尺寸（忽略被误写入的专注/膨胀尺寸）
+  // 同步 DB 中的完整模式尺寸（忽略被误写入的专注尺寸 / 膨胀值）
   useEffect(() => {
     if (!settingsReady) return;
     const resolved = resolveStoredFullSize(fullWindowWidth, fullWindowHeight);
@@ -54,42 +68,28 @@ export function useFocusWindowSize(
     }
   }, [settingsReady, fullWindowWidth, fullWindowHeight, focusMode]);
 
-  // 完整模式启动：若 window-state 恢复了专注模式矮窗口，则恢复完整尺寸
-  useEffect(() => {
-    if (!settingsReady || focusMode || didFullRestoreCheck.current) return;
-    didFullRestoreCheck.current = true;
-    void (async () => {
-      const current = await readWindowInnerSize();
-      const full = fullSizeRef.current;
-      if (!current) return;
-      if (!isLikelyFullModeSize(current) && full.height > current.height) {
-        await setWindowLogicalSize(full);
-        return;
-      }
-      if (isOversizedFullSize(current)) {
-        await setWindowLogicalSize(full);
-      }
-    })();
-  }, [settingsReady, focusMode]);
-
   useEffect(() => {
     if (!settingsReady) return;
 
     let cancelled = false;
-    let debounceId: number | undefined;
 
     const run = async () => {
-      const wasFocus = prevFocusMode.current;
+      const wasFocus = prevFocusMode.current; // 首次运行为 null
       prevFocusMode.current = focusMode;
 
       if (focusMode) {
-        // 刚进入专注：仅在当前为完整模式尺寸时更新 fullWindow*，避免误存放大后的值
-        if (wasFocus === false) {
+        const entering = wasFocus !== true;
+
+        // 进入专注（启动时就已经是专注也算）：记录完整模式尺寸并调成正方形
+        if (entering) {
           const current = await readWindowInnerSize();
           if (cancelled) return;
 
           if (current && isLikelyFullModeSize(current)) {
-            fullSizeRef.current = { width: current.width, height: current.height };
+            fullSizeRef.current = {
+              width: current.width,
+              height: current.height,
+            };
             focusWidthRef.current = current.width;
             await saveSetting("fullWindowWidth", current.width);
             await saveSetting("fullWindowHeight", current.height);
@@ -100,34 +100,62 @@ export function useFocusWindowSize(
           } else {
             focusWidthRef.current = fullSizeRef.current.width;
           }
+
+          await setWindowLogicalSize({
+            width: focusWidthRef.current,
+            height: computeFocusWindowHeight(focusWidthRef.current),
+          });
         }
 
-        await applyFocusWindowHeight(activeCount, focusWidthRef.current);
+        // 专注 + 穿透 → 锁死尺寸；专注无穿透 → 解锁、自由缩放
+        if (sizeLocked) {
+          await setWindowResizable(false);
+          if (entering) {
+            // 刚进入：直接锁到上面设好的正方形尺寸。
+            // 不回读窗口尺寸——setSize 刚发出，窗口管理器可能还没应用，回读会拿到旧尺寸。
+            await lockWindowSize({
+              width: focusWidthRef.current,
+              height: computeFocusWindowHeight(focusWidthRef.current),
+            });
+          } else {
+            // 已经在专注模式里再开启穿透：继承当前尺寸（用户可能刚拉过大小）
+            await lockCurrentWindowSize();
+          }
+        } else {
+          await unlockWindowSize();
+          await setWindowResizable(true);
+        }
         return;
       }
 
-      // 退出专注：恢复进入前记录的完整模式尺寸
       if (wasFocus === true) {
+        // 退出专注：先解锁，再恢复完整模式尺寸与自由缩放
+        await unlockWindowSize();
+        await setWindowResizable(true);
         await setWindowLogicalSize(fullSizeRef.current);
+        return;
+      }
+
+      // 启动即完整模式：修正 window-state 可能恢复的专注尺寸 / 异常膨胀尺寸
+      if (wasFocus === null && !didFullRestoreCheck.current) {
+        didFullRestoreCheck.current = true;
+        const current = await readWindowInnerSize();
+        if (!current || cancelled) return;
+        const full = fullSizeRef.current;
+        if (
+          (!isLikelyFullModeSize(current) && full.height > current.height) ||
+          isOversizedFullSize(current)
+        ) {
+          await unlockWindowSize();
+          await setWindowLogicalSize(full);
+        }
       }
     };
 
-    const schedule = () => {
-      if (debounceId !== undefined) window.clearTimeout(debounceId);
-      if (focusMode && prevFocusMode.current === true) {
-        debounceId = window.setTimeout(() => {
-          void run();
-        }, RESIZE_DEBOUNCE_MS);
-      } else {
-        void run();
-      }
-    };
-
-    schedule();
+    void run();
 
     return () => {
       cancelled = true;
-      if (debounceId !== undefined) window.clearTimeout(debounceId);
     };
-  }, [focusMode, activeCount, settingsReady]);
+  }, [focusMode, settingsReady, sizeLocked]);
 }

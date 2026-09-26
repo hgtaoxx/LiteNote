@@ -85,6 +85,14 @@ button {
 [data-tauri-no-drag] {
   -webkit-app-region: no-drag;
 }
+/*
+  专注模式顶部拖拽条：鼠标穿透开启时窗口不允许移动，
+  但这条要保留占位（高度不变，切换时文字才不会跳动），只把拖拽区域关掉。
+  用类选择器提高优先级，避免依赖上面两条规则的书写顺序。
+*/
+[data-tauri-drag-region].ln-no-drag-handle {
+  -webkit-app-region: no-drag;
+}
 
 /* ══════════════════════════════════════════════════
    钉钉式提醒弹窗：完全无边框、占满 WebView

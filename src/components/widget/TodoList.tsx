@@ -6,7 +6,6 @@ import {
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import { sortTodos, bucketCompletedByTime } from "@/lib/todoSort";
-import { FOCUS_MAX_LIST_HEIGHT } from "@/lib/focusWindowSize";
 import type { TodoItem } from "@/types/todo";
 import { TodoRow } from "./TodoRow";
 
@@ -94,6 +93,7 @@ export function TodoList({
     ));
 
   if (focusMode) {
+    // 专注模式窗口是固定尺寸（宽度 × 2 或正方形），内容区填满并内部滚动
     if (activeSorted.length === 0) {
       return (
         <div
@@ -107,10 +107,7 @@ export function TodoList({
 
     return (
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div
-          className="min-h-0 flex-1 overflow-y-auto"
-          style={{ maxHeight: FOCUS_MAX_LIST_HEIGHT }}
-        >
+        <div className="min-h-0 flex-1 overflow-y-auto">
           {renderRows(activeSorted)}
         </div>
       </div>

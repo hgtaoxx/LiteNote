@@ -397,10 +397,25 @@ fn read_always_on_top<R: Runtime>(app: &AppHandle<R>) -> bool {
     read_setting_bool(&conn, "alwaysOnTop", false)
 }
 
+/// 鼠标穿透状态：开启后窗口忽略鼠标事件，点击落到下层窗口，只能从托盘关闭
+fn read_mouse_passthrough<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let Some(db_path) = litenote_db_path(app) else {
+        return false;
+    };
+    if !db_path.exists() {
+        return false;
+    }
+    let Ok(conn) = Connection::open(&db_path) else {
+        return false;
+    };
+    read_setting_bool(&conn, "mousePassthrough", false)
+}
+
 fn build_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     focus_mode: bool,
     always_on_top: bool,
+    mouse_passthrough: bool,
 ) -> tauri::Result<Menu<R>> {
     let show_i = MenuItem::with_id(app, "tray_show", "显示窗口", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
@@ -428,26 +443,61 @@ fn build_tray_menu<R: Runtime>(
         always_on_top,
         None::<&str>,
     )?;
+    // 鼠标穿透：开启后窗口点不到，只能从这里关闭
+    let passthrough_i = CheckMenuItem::with_id(
+        app,
+        "tray_mouse_passthrough",
+        "鼠标穿透",
+        true,
+        mouse_passthrough,
+        None::<&str>,
+    )?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let quit_i = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
     Menu::with_items(
         app,
-        &[&show_i, &sep1, &focus_i, &manage_i, &pin_i, &sep2, &quit_i],
+        &[
+            &show_i,
+            &sep1,
+            &focus_i,
+            &manage_i,
+            &pin_i,
+            &passthrough_i,
+            &sep2,
+            &quit_i,
+        ],
     )
 }
 
 fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let focus_mode = read_focus_mode(app);
     let always_on_top = read_always_on_top(app);
-    let menu = build_tray_menu(app, focus_mode, always_on_top)?;
+    let mouse_passthrough = read_mouse_passthrough(app);
+    let menu = build_tray_menu(app, focus_mode, always_on_top, mouse_passthrough)?;
     if let Some(tray) = app.tray_by_id("litenote-tray") {
         tray.set_menu(Some(menu))?;
     }
     Ok(())
 }
 
+/// 实际生效的鼠标穿透 = 设置开启 **且** 当前是完整模式。
+///
+/// 专注模式下不真穿透：窗口仍需接收鼠标事件，才能上下滚动、勾选完成。
+/// 设置值与托盘勾选状态保持不变，切回完整模式自动恢复。
+///
+/// 放在 Rust 侧统一施加：托盘、快捷键、启动恢复都经过这里，
+/// 且不依赖前端的 window 插件权限。
+fn apply_effective_passthrough<R: Runtime>(app: &AppHandle<R>) {
+    let enabled = read_mouse_passthrough(app) && !read_focus_mode(app);
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_ignore_cursor_events(enabled);
+    }
+}
+
 fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
     write_setting_bool(app, "focusMode", enabled)?;
+    // 进入专注要临时取消穿透，退出专注要恢复穿透
+    apply_effective_passthrough(app);
     rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
     app.emit(
         SETTINGS_UPDATED_EVENT,
@@ -459,6 +509,26 @@ fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(),
 
 fn toggle_focus_mode<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     apply_focus_mode(app, !read_focus_mode(app))
+}
+
+/// 鼠标穿透：开启后窗口忽略鼠标事件；因为点不到界面，关闭只能走托盘。
+///
+/// 只负责写设置 + 刷新托盘，真正施加穿透统一由 `apply_effective_passthrough`
+/// 按「设置开启 且 非专注模式」决定——专注模式下要保留滚动与勾选，不能真穿透。
+fn apply_mouse_passthrough<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
+    write_setting_bool(app, "mousePassthrough", enabled)?;
+    apply_effective_passthrough(app);
+    rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
+    app.emit(
+        SETTINGS_UPDATED_EVENT,
+        serde_json::json!({ "ts": now_ms(), "source": "rust" }),
+    )
+    .map_err(|e| format!("通知前端失败: {e}"))?;
+    Ok(())
+}
+
+fn toggle_mouse_passthrough<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    apply_mouse_passthrough(app, !read_mouse_passthrough(app))
 }
 
 fn apply_always_on_top<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
@@ -724,6 +794,12 @@ fn set_focus_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
     apply_focus_mode(&app, enabled)
 }
 
+/// 设置鼠标穿透：前端按钮只用于开启，关闭只能走托盘
+#[tauri::command]
+fn set_mouse_passthrough(app: AppHandle, enabled: bool) -> Result<(), String> {
+    apply_mouse_passthrough(&app, enabled)
+}
+
 /// 设置窗口置顶（托盘、快捷键、前端均可调用）
 #[tauri::command]
 fn set_always_on_top(app: AppHandle, enabled: bool) -> Result<(), String> {
@@ -938,6 +1014,7 @@ pub fn run() {
             hide_main_window,
             set_focus_mode,
             set_always_on_top,
+            set_mouse_passthrough,
             update_shortcuts,
             webdav::webdav_set_config,
             webdav::webdav_get_config,
@@ -993,7 +1070,13 @@ pub fn run() {
 
             let focus_mode = read_focus_mode(app.handle());
             let always_on_top = read_always_on_top(app.handle());
-            let menu = build_tray_menu(app.handle(), focus_mode, always_on_top)?;
+            let mouse_passthrough = read_mouse_passthrough(app.handle());
+            let menu = build_tray_menu(
+                app.handle(),
+                focus_mode,
+                always_on_top,
+                mouse_passthrough,
+            )?;
 
             let _tray = TrayIconBuilder::with_id("litenote-tray")
                 .icon(icon)
@@ -1015,6 +1098,9 @@ pub fn run() {
                     }
                     "tray_always_on_top" => {
                         let _ = toggle_always_on_top(app);
+                    }
+                    "tray_mouse_passthrough" => {
+                        let _ = toggle_mouse_passthrough(app);
                     }
                     _ => {}
                 })
@@ -1049,6 +1135,10 @@ pub fn run() {
             if let Err(e) = register_all_shortcuts(app.handle()) {
                 eprintln!("[LiteNote] 全局快捷键注册失败: {e}");
             }
+
+            // 启动时按「穿透开启 且 非专注模式」恢复窗口穿透状态，
+            // 避免前端设置加载完成之前窗口短暂可点击
+            apply_effective_passthrough(app.handle());
 
             // 启动后强制显示主窗口，避免 window-state 或上次隐藏导致「启动打不开」
             show_main_window(app.handle());
