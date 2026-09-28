@@ -7,10 +7,13 @@ interface AppContextMenuProps {
   locale: Locale;
   x: number;
   y: number;
-  /** 当前是否专注模式：决定第二项显示「专注模式」还是「完整模式」 */
+  /** 当前是否专注模式：决定第二项显示「专注模式」还是「完整模式」，以及是否出现「界面锁定」 */
   isFocus: boolean;
+  /** 「界面锁定」是否已开启（专注模式下等同设置里的鼠标穿透） */
+  locked: boolean;
   onHide: () => void;
   onToggleFocus: () => void;
+  onToggleLock: () => void;
   onQuit: () => void;
   onClose: () => void;
 }
@@ -28,8 +31,10 @@ export function AppContextMenu({
   x,
   y,
   isFocus,
+  locked,
   onHide,
   onToggleFocus,
+  onToggleLock,
   onQuit,
   onClose,
 }: AppContextMenuProps) {
@@ -70,6 +75,11 @@ export function AppContextMenu({
     onClose();
   };
 
+  /** 勾选栏占位：让四项文字左边缘对齐 */
+  const gutter = (
+    <span className="inline-block w-3.5 shrink-0" aria-hidden />
+  );
+
   return (
     <div
       ref={ref}
@@ -91,6 +101,7 @@ export function AppContextMenu({
         style={itemStyle}
         onClick={run(onHide)}
       >
+        {gutter}
         {mk("menuHideWindow")}
       </button>
       <button
@@ -100,8 +111,25 @@ export function AppContextMenu({
         style={itemStyle}
         onClick={run(onToggleFocus)}
       >
+        {gutter}
         {mk(isFocus ? "menuExitFocus" : "menuEnterFocus")}
       </button>
+
+      {/* 界面锁定：只在专注模式出现（= 设置里的「鼠标穿透」；专注下它不是真穿透） */}
+      {isFocus ? (
+        <button
+          type="button"
+          role="menuitem"
+          className={item}
+          style={itemStyle}
+          onClick={run(onToggleLock)}
+        >
+          <span className="inline-block w-3.5 shrink-0" aria-hidden>
+            {locked ? "✓" : ""}
+          </span>
+          {mk("menuLockUi")}
+        </button>
+      ) : null}
 
       <div
         className="my-1"
@@ -115,6 +143,7 @@ export function AppContextMenu({
         style={itemStyle}
         onClick={run(onQuit)}
       >
+        {gutter}
         {mk("menuQuit")}
       </button>
     </div>

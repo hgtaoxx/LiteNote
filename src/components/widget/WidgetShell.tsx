@@ -372,12 +372,10 @@ export function WidgetShell() {
               (windowMode.noSelect ? " select-none" : "")
             }
             /*
-              右键菜单挂在**整个专注内容区**上，而不是只挂在 16px 高的拖拽条上：
-              专注模式下窗口可缩放，窗口顶部约 4~8px 是系统缩放边框，
-              右键落在那里会被 Windows 抢去弹系统菜单（还原/移动/大小…），
-              只挂拖拽条的话很容易点空。挂在这里，往下点也能正常出菜单。
+              注意：这里**不要**挂 onContextMenu。
+              内容区要保留它原本的右键行为（用户反馈：挂上去会和应用菜单同时弹出）。
+              应用自己的菜单只挂在拖拽条的**右半区**，见 FocusDragHandle。
             */
-            onContextMenu={openAppMenu}
           >
             {/* 拖拽条始终占位（高度不变、切换时文字不跳），受限形态下仅禁用拖动 */}
             <FocusDragHandle
@@ -558,8 +556,10 @@ export function WidgetShell() {
           x={appMenu.x}
           y={appMenu.y}
           isFocus={focusMode}
+          locked={mousePassthrough}
           onHide={handleHide}
           onToggleFocus={() => setFocusMode(!focusMode)}
+          onToggleLock={() => setMousePassthrough(!mousePassthrough)}
           onQuit={handleQuit}
           onClose={closeAppMenu}
         />

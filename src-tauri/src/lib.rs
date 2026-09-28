@@ -443,11 +443,18 @@ fn build_tray_menu<R: Runtime>(
         always_on_top,
         None::<&str>,
     )?;
-    // 鼠标穿透：开启后窗口点不到，只能从这里关闭
+    // 鼠标穿透：开启后窗口点不到，只能从这里关闭。
+    // 专注模式下它不是真穿透（窗口仍需接收鼠标事件才能滚动/勾选），而是"锁定界面"，
+    // 所以标题跟着模式变，避免用户困惑。
+    let passthrough_label = if focus_mode {
+        "界面锁定"
+    } else {
+        "鼠标穿透"
+    };
     let passthrough_i = CheckMenuItem::with_id(
         app,
         "tray_mouse_passthrough",
-        "鼠标穿透",
+        passthrough_label,
         true,
         mouse_passthrough,
         None::<&str>,

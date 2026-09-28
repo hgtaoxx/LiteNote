@@ -30,7 +30,20 @@ export function FocusDragHandle({
         (draggable ? "cursor-grab active:cursor-grabbing" : "cursor-default")
       }
       data-tauri-drag-region={draggable ? "deep" : "false"}
-      onContextMenu={onContextMenu}
+      onContextMenu={(e) => {
+        /*
+          左右分区（按用户设计）：
+            · 左半区 → 不拦截，交给系统 → 弹出 Windows 系统菜单（还原/移动/大小…）
+            · 右半区 → 拦下并 preventDefault → 弹出应用自己的菜单
+          注意：紧贴窗口最顶的那几像素属于非客户区（缩放边框），
+          Windows 会直接抢走右键，DOM 收不到事件，属于平台限制。
+        */
+        const rect = e.currentTarget.getBoundingClientRect();
+        const onRightHalf = e.clientX - rect.left > rect.width / 2;
+        if (!onRightHalf) return;
+        e.preventDefault();
+        onContextMenu?.(e);
+      }}
       aria-hidden
     >
       <span
