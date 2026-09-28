@@ -35,11 +35,21 @@ const TODO_ROW_PAD_Y = "py-0.5";
 const DATE_FONT_SIZE = 9;
 
 /**
- * 日期与正文之间的距离（用户暂定 6px）。
- * 正文块自身带 2px 下内边距（TODO_ROW_PAD_Y 的 pb-0.5），
- * 所以日期行只需再补 4px，两者相加正好 6px。
+ * 日期与正文之间的**可见**距离（用户暂定 6px）。
  */
 const DATE_GAP_Y = 6;
+
+/**
+ * 正文行高带来的「隐性空隙」系数（半行距）。
+ *
+ * 正文用 line-height: 1.6 排版（多行可读性需要），字号 F 时行盒高 1.6F，
+ * 而字形本身只占约 1.16F —— 多出来的部分平均分到上下，每侧约 (1.6-1.16)/2 ≈ 0.22F。
+ *
+ * 关键：这部分属于**行盒内部**，不是 margin/padding，
+ * 所以只调间距是压不下去的（这正是「改了间距却没效果」的原因）。
+ * 只能反过来用**负 margin** 把它吃掉。
+ */
+const CONTENT_HALF_LEADING = 0.22;
 
 interface TodoRowProps {
   todo: TodoItem;
@@ -412,7 +422,16 @@ function ManagementTodoRow({
           style={{
             fontSize: DATE_FONT_SIZE,
             lineHeight: 1.3,
-            marginTop: DATE_GAP_Y - 2,
+            /*
+              让「正文 → 日期」的**可见**间距正好等于 DATE_GAP_Y：
+
+                可见间距 = 正文下内边距(2px) + 半行距(0.22 × 正文字号) + 这里的外边距
+
+              所以 外边距 = DATE_GAP_Y − 2px − 0.22em。
+              字号取 CSS 变量 --ln-content-font-size（用户可调 12~17px），
+              所以用 calc 算；结果通常是很小的正数，字号大时会略微为负，都正常。
+            */
+            marginTop: `calc(${DATE_GAP_Y}px - 2px - ${CONTENT_HALF_LEADING} * var(--ln-content-font-size, 14px))`,
             padding: "0 1em",
           }}
         >
