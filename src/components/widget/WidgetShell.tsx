@@ -184,6 +184,17 @@ export function WidgetShell() {
   // 模式判定统一走 resolveWindowMode（唯一来源），四种形态见 lib/windowMode.ts 的状态表
   const windowMode = resolveWindowMode(focusMode, mousePassthrough);
 
+  /**
+   * 诊断日志：曾有"刷新内容区后莫名跳到专注模式"的偶发报告，
+   * 但查遍前端（无自动切模式的代码、无键盘处理）、后端（busy_timeout 已设、
+   * WebDAV 同步不含 focusMode）都没找到能改它的路径。
+   * 这里在每次 focusMode 变化时打一行日志，下次复发时打开开发者工具
+   * （右键 → 更多工具 → 开发者工具）就能看到它是在什么时候、变成什么值。
+   */
+  useEffect(() => {
+    console.warn("[LiteNote] focusMode 变为:", focusMode);
+  }, [focusMode]);
+
   // 内容字号 / 内容字体下发为 CSS 变量，**只有待办正文（TodoRow）读它们**。
   // 界面其余部分（顶栏、时钟区、底部栏、设置面板）固定用默认字体与字号，不跟随。
   useEffect(() => {
