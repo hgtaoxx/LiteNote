@@ -321,6 +321,12 @@ function AboutTab({ locale }: { locale: Locale }) {
 
   return (
     <section className="space-y-3">
+      <h3
+        className="text-sm font-medium"
+        style={{ color: "var(--ln-theme-text)" }}
+      >
+        {mk("settingsTabAbout")}
+      </h3>
       <p
         className="text-sm leading-relaxed"
         style={{ color: "var(--ln-theme-text-secondary)" }}
@@ -330,7 +336,13 @@ function AboutTab({ locale }: { locale: Locale }) {
           : "Lightweight local to-do note widget. Your data stays on your machine."}
       </p>
 
-      {/* 全局快捷键（原「快捷键」标签页的内容） */}
+      {/* 全局快捷键（原「快捷键」标签页的内容）——标题与上面的「关于」同字号、同左对齐 */}
+      <h3
+        className="text-sm font-medium pt-1"
+        style={{ color: "var(--ln-theme-text)" }}
+      >
+        {mk("settingsTabShortcuts")}
+      </h3>
       <div className="space-y-2.5">
         <EditableShortcutRow
           label={mk("shortcutHideWindow")}
@@ -919,15 +931,16 @@ export function SettingsModal({
 
         {/* 四个标签页共用同一个固定高度的内容区 —— 高度不一致会让切换时面板"跳大小"。
             取 340px 是为了容纳内容最多的「常规」页；窗口很矮时用 max-h 兜住，不会溢出。 */}
+        {/* 四个标签页共用同一内容区。
+            宽度收 20% 并居中：这样四个页的左右边距完全一致（常规与同步对齐），
+            同时行内「标签 ↔ 右侧控件」之间的空隙也随之收窄。 */}
         <div
           className="h-[340px] max-h-[calc(90vh-140px)] overflow-y-auto overflow-x-auto"
-          style={{ scrollbarGutter: "stable" }}
+          style={{ scrollbarGutter: "stable", width: "80%", margin: "0 auto" }}
         >
         {tab === "sync" ? (
           <SyncSettings locale={locale} />
         ) : tab === "general" ? (
-          /* 常规内容横向收 20%（容器居中）：标签与右侧控件之间不再拉得那么开 */
-          <div style={{ width: "80%", margin: "0 auto" }}>
           <>
         {/* 外观 */}
         <section className="mb-3">
@@ -945,6 +958,9 @@ export function SettingsModal({
               style={{
                 WebkitAppearance: "none",
                 appearance: "none" as React.CSSProperties["appearance"],
+                // 不设 min-width 时，浏览器会给 range 一个固有最小宽度，
+                // 容器一收窄就会把整行撑出横向滚动条（之前底部那条就是它）。
+                minWidth: 0,
               }}
             />
             <span className="text-xs w-8 text-right shrink-0" style={{ color: "var(--ln-theme-text-secondary)" }}>
@@ -1088,6 +1104,9 @@ export function SettingsModal({
               style={{
                 WebkitAppearance: "none",
                 appearance: "none" as React.CSSProperties["appearance"],
+                // 不设 min-width 时，浏览器会给 range 一个固有最小宽度，
+                // 容器一收窄就会把整行撑出横向滚动条（之前底部那条就是它）。
+                minWidth: 0,
               }}
             />
             <span
@@ -1099,7 +1118,6 @@ export function SettingsModal({
           </div>
         </section>
           </>
-          </div>
         ) : (
           <AboutTab locale={locale} />
         )}
