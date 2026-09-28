@@ -506,15 +506,59 @@ fn apply_effective_passthrough<R: Runtime>(app: &AppHandle<R>) {
         /*
           「专注 + 穿透」= 界面锁定：在 Rust 侧也把「禁止缩放」落实一遍。
           原来只靠前端调 setResizable，一旦前端状态没同步、或 window 插件权限异常，
-          就会静默失效（表现为"开了锁定还是能拉"）。
+          就会静默失效（表现为「开了锁定还是能拉」）。
 
           这里只动 resizable，**不动 min/max**：专注模式的正方形尺寸是前端算好再
           调 setSize 设的，若在这里抢先锁死 min=max，前端的 setSize 会被夹住，
           正方形就永远设不进去。
         */
         let _ = w.set_resizable(!locked);
+
+        // set_resizable 会让 TAO 重新套用窗口样式，从而把标题栏样式加回来，
+        // 所以每次改完都要再剥一次（详见函数注释）。
+        strip_window_frame(&w);
     }
 }
+
+/// Windows：剥掉「标题栏」与「系统菜单」样式。
+///
+/// 为什么必须做：TAO 的 `WindowFlags::to_window_styles()`
+/// （tao-0.35.2/src/platform_impl/windows/window_state.rs:244）会**无条件**加上
+/// `WS_CAPTION | WS_SYSMENU`，而只有「计算尺寸」的两条路径
+/// （`to_adjusted_window_styles`、`WM_GETMINMAXINFO`）才为无边框窗口去掉它们。
+///
+/// 结果：运行时的窗口其实一直带着标题区域 —— 窗口**最顶那一条**被 Windows 当成
+/// 标题栏，于是：
+///   · 左键按住它拖动 → **移动窗口**（绕过 WebView）
+///   · 右键点它       → **弹出系统菜单**（还原/移动/大小/最小化/最大化/关闭）
+/// 两者前端都收不到任何事件，这正是「专注 + 界面锁定」时窗口还能被拖动、
+/// 右键弹出系统菜单的原因，也是拖拽条上做自定义右键菜单始终做不出来的原因。
+///
+/// 这里只剥 `WS_CAPTION | WS_SYSMENU`，**保留 `WS_THICKFRAME`**：
+/// 去掉后仍能靠边缘拉伸窗口（完整模式需要），但标题栏与系统菜单不复存在，
+/// 顶部那条不再可拖动、右键也不再弹系统菜单。
+#[cfg(windows)]
+fn strip_window_frame<R: Runtime>(w: &tauri::WebviewWindow<R>) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_CAPTION, WS_SYSMENU,
+    };
+
+    let Ok(hwnd) = w.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as *mut core::ffi::c_void;
+
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE);
+        let strip = (WS_CAPTION | WS_SYSMENU) as i32;
+        if style & strip != 0 {
+            SetWindowLongW(hwnd, GWL_STYLE, style & !strip);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn strip_window_frame<R: Runtime>(_w: &tauri::WebviewWindow<R>) {}
 
 fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
     write_setting_bool(app, "focusMode", enabled)?;

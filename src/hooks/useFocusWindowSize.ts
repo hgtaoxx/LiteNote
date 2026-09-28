@@ -7,7 +7,6 @@ import {
   lockWindowSize,
   readWindowInnerSize,
   setWindowLogicalSize,
-  setWindowResizable,
   unlockWindowSize,
   isLikelyFullModeSize,
   isOversizedFullSize,
@@ -124,9 +123,11 @@ export function useFocusWindowSize(
           if (cancelled) return;
         }
 
-        // 专注 + 穿透 → 锁死尺寸；专注无穿透 → 解锁、自由缩放
+        // 专注 + 穿透 → 锁死尺寸；专注无穿透 → 解锁、自由缩放。
+        // 注意：这里**不再**调 setResizable —— 改由 Rust 的
+        // apply_effective_passthrough 统一负责（前端调用会让 TAO 重新套用窗口
+        // 样式、把标题栏样式加回来，顶部又变成可拖动 + 右键弹系统菜单）。
         if (sizeLocked) {
-          await setWindowResizable(false);
           if (entering) {
             // 刚进入：直接锁到上面设好的正方形尺寸。
             // 不回读窗口尺寸——setSize 刚发出，窗口管理器可能还没应用，回读会拿到旧尺寸。
@@ -140,16 +141,14 @@ export function useFocusWindowSize(
           }
         } else {
           await unlockWindowSize();
-          await setWindowResizable(true);
         }
         commit();
         return;
       }
 
       if (wasFocus === true) {
-        // 退出专注：先解锁，再恢复完整模式尺寸与自由缩放
+        // 退出专注：先解锁，再恢复完整模式尺寸；可缩放状态同样交给 Rust 恢复
         await unlockWindowSize();
-        await setWindowResizable(true);
         await setWindowLogicalSize(fullSizeRef.current);
         commit();
         return;
