@@ -79,14 +79,14 @@ export function TodoContextMenu({
   }, [onClose]);
 
   const item =
-    "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[13px] text-neutral-800 hover:bg-neutral-100";
+    "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-neutral-800 hover:bg-neutral-100";
 
   const mk = (key: MessageKey) => t(locale, key);
 
   const dueLabel = dueDate > 0 ? formatDueDate(dueDate, locale === "en" ? "en" : "zh-CN") : null;
 
   const quickBtn =
-    "rounded-md border border-neutral-300 px-1.5 py-0.5 text-[11px] text-neutral-700 hover:bg-neutral-100 transition";
+    "rounded-md border border-neutral-300 px-1.5 py-0.5 text-neutral-700 hover:bg-neutral-100 transition";
 
   return (
     <div
@@ -95,6 +95,13 @@ export function TodoContextMenu({
       style={{
         left: Math.min(x, window.innerWidth - 220),
         top: Math.min(y, window.innerHeight - 420),
+        /*
+          字号用内联样式，不用 Tailwind 任意值类（text-[13px]）：
+          实测它们虽然被生成了（.text-\[13px\]{font-size:13px}），但在实际渲染中
+          并没有生效（同项目里下拉菜单字号也踩过同一个坑）。
+          内联样式优先级最高，必定落地；子元素继承，快捷按钮再单独覆盖成 11px。
+        */
+        fontSize: 13,
       }}
       role="menu"
     >
@@ -114,7 +121,7 @@ export function TodoContextMenu({
       ) : null}
 
       <div className={completed ? "py-1" : "border-t border-neutral-100 py-1"}>
-        <div className="px-2.5 py-1 text-[11px] text-neutral-500">{mk("menuColor")}</div>
+        <div className="px-2.5 py-1 text-neutral-500" style={{ fontSize: 11 }}>{mk("menuColor")}</div>
         <div className="flex flex-wrap items-center gap-1.5 px-2 pb-1">
           {TODO_COLOR_IMPORTANCE_ORDER.map((c) => (
             <button
@@ -138,13 +145,13 @@ export function TodoContextMenu({
           {/* 截止时间：循环待办不显示（时间已由循环规则确定） */}
           {!isRecurring ? (
             <div className="border-t border-neutral-100 py-1">
-              <div className="flex items-center justify-between px-2.5 py-1">
-                <span className="text-[11px] text-neutral-500">{mk("menuDueDate")}</span>
+              <div className="flex items-center justify-between px-2.5 py-1" style={{ fontSize: 11 }}>
+                <span className="text-neutral-500">{mk("menuDueDate")}</span>
                 {dueLabel ? (
-                  <span className="text-[11px] text-sky-600">{dueLabel}</span>
+                  <span className="text-sky-600">{dueLabel}</span>
                 ) : null}
               </div>
-              <div className="flex items-center gap-1.5 px-2 pb-1">
+              <div className="flex items-center gap-1.5 px-2 pb-1" style={{ fontSize: 11 }}>
                 <button
                   type="button"
                   className={quickBtn}
@@ -205,8 +212,8 @@ export function TodoContextMenu({
 
           {/* 循环规则 */}
           <div className="border-t border-neutral-100 py-1">
-            <div className="px-2.5 py-1 text-[11px] text-neutral-500">{mk("menuRecurrence")}</div>
-            <div className="flex items-center gap-1.5 px-2 pb-1">
+            <div className="px-2.5 py-1 text-neutral-500" style={{ fontSize: 11 }}>{mk("menuRecurrence")}</div>
+            <div className="flex items-center gap-1.5 px-2 pb-1" style={{ fontSize: 11 }}>
               {RECURRENCE_LABELS.map(({ type }) => (
                 <button
                   key={type}

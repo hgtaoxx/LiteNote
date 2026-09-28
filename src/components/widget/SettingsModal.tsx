@@ -227,7 +227,7 @@ function CustomSelect<T extends string>({
   );
 }
 
-type SettingsTab = "general" | "shortcuts" | "sync";
+type SettingsTab = "general" | "shortcuts" | "sync" | "about";
 
 /** 快捷键名类型来自 @/lib/db（唯一来源），此处不再重复声明 */
 
@@ -246,12 +246,14 @@ function SettingsTabs({
   generalLabel,
   shortcutsLabel,
   syncLabel,
+  aboutLabel,
 }: {
   tab: SettingsTab;
   onTabChange: (t: SettingsTab) => void;
   generalLabel: string;
   shortcutsLabel: string;
   syncLabel: string;
+  aboutLabel: string;
 }) {
   const btn = (active: boolean) =>
     `flex flex-1 items-center justify-center rounded px-2 text-[9.5px] leading-none transition-colors ${
@@ -303,7 +305,41 @@ function SettingsTabs({
       >
         {syncLabel}
       </button>
+      {/* 关于：放在「同步」右侧 */}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={tab === "about"}
+        className={btn(tab === "about")}
+        style={{
+          color: tab === "about" ? "var(--ln-theme-text)" : "var(--ln-theme-text-secondary)",
+          background: tab === "about" ? "var(--ln-theme-surface-active)" : "transparent",
+        }}
+        onClick={() => onTabChange("about")}
+      >
+        {aboutLabel}
+      </button>
     </div>
+  );
+}
+
+/**
+ * 设置里的「关于」页（放在「同步」右侧）。
+ * 内容就是原来那个关于弹窗的简介——外链（B站教程 / GitHub 源码）已按用户要求删除。
+ */
+function AboutTab({ locale }: { locale: Locale }) {
+  const isZh = locale === "zh-CN";
+  return (
+    <section className="space-y-3">
+      <p
+        className="text-sm leading-relaxed"
+        style={{ color: "var(--ln-theme-text-secondary)" }}
+      >
+        {isZh
+          ? "轻量本地待办便签工具，数据存于本机，透明面板常驻桌面。"
+          : "Lightweight local to-do note widget. Your data stays on your machine."}
+      </p>
+    </section>
   );
 }
 
@@ -850,9 +886,10 @@ export function SettingsModal({
           generalLabel={mk("settingsTabGeneral")}
           shortcutsLabel={mk("settingsTabShortcuts")}
           syncLabel={mk("syncTab")}
+          aboutLabel={mk("settingsTabAbout")}
         />
 
-        {/* 三个标签页共用同一个固定高度的内容区 —— 高度不一致会让切换时面板"跳大小"。
+        {/* 四个标签页共用同一个固定高度的内容区 —— 高度不一致会让切换时面板"跳大小"。
             取 340px 是为了容纳内容最多的「常规」页；窗口很矮时用 max-h 兜住，不会溢出。 */}
         <div
           className="h-[340px] max-h-[calc(90vh-140px)] overflow-y-auto overflow-x-auto"
@@ -1032,7 +1069,7 @@ export function SettingsModal({
           </div>
         </section>
           </>
-        ) : (
+        ) : tab === "shortcuts" ? (
           <section className="space-y-2.5">
             <EditableShortcutRow
               label={mk("shortcutHideWindow")}
@@ -1070,6 +1107,8 @@ export function SettingsModal({
               {mk("shortcutHint")}
             </p>
           </section>
+        ) : (
+          <AboutTab locale={locale} />
         )}
         </div>
       </div>
