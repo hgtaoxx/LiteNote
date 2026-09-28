@@ -46,11 +46,13 @@ const DATE_FONT_SIZE = 9;
 /**
  * 日期与正文之间的**可见**距离。
  *
- * 按用户要求把 3px 去掉，现在为 0 —— 日期紧贴正文行盒底部。
- * 这仍是唯一需要调的数字：0 为贴住，填 2/3/4 松开一点，负数会更贴。
- * 进行中与已完成共用。
+ * 当前 0：日期紧贴正文的字形底部（不会压到字上）。
+ * 想重叠就填负数；想松一点填 2~4。进行中与已完成共用。
  */
 const DATE_GAP_Y = 0;
+
+/** 日期到底边线的距离（用户指定 1px） */
+const DATE_BOTTOM_PAD = 1;
 
 /**
  * 正文行高带来的「隐性空隙」系数（半行距）。
@@ -442,8 +444,16 @@ function ManagementTodoRow({
           }
           style={{
             fontSize: DATE_FONT_SIZE,
-            // 行高 1：日期自身不再产生额外半行距，间距完全由 DATE_GAP_Y 决定
+            // 行高 1：日期自身不再产生额外半行距
             lineHeight: 1,
+            /*
+              ★ 关键：alignSelf: flex-start
+              容器是 flex-wrap + items-center，日期行是**换行项**。
+              在 items-center 下，负的 marginTop 会被上下平分，
+              实际只上移一半（4.2px 的补偿只剩 2.1px）——
+              表现就是「既没贴住、也没重叠」。改成顶对齐后负 margin 全额生效。
+            */
+            alignSelf: "flex-start",
             /*
               让「正文 → 日期」的**可见**间距正好等于 DATE_GAP_Y。
 
@@ -457,7 +467,8 @@ function ManagementTodoRow({
               DATE_GAP_Y 可以填 0 甚至负数（负得越多，日期越往内容贴）。
             */
             marginTop: `calc(${DATE_GAP_Y}px - ${CONTENT_HALF_LEADING} * var(--ln-content-font-size, 14px))`,
-            padding: "0 1em",
+            // 左右各内缩 1 个字符；底部留 DATE_BOTTOM_PAD —— 即「日期 → 底边线」的距离
+            padding: `0 1em ${DATE_BOTTOM_PAD}px`,
           }}
         >
           {/* 已完成才有左侧的创建日期；进行中只显示一个日期，落在右下角 */}
