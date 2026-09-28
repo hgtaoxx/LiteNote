@@ -5,7 +5,7 @@ use chrono::{Datelike, TimeDelta, Timelike, Months, NaiveDate, DateTime};
 use rusqlite::Connection;
 use tauri::{
     image::Image,
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, ContextMenu, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalPosition, Manager, Runtime, WebviewUrl,
     WebviewWindowBuilder,
@@ -531,6 +531,35 @@ fn toggle_mouse_passthrough<R: Runtime>(app: &AppHandle<R>) -> Result<(), String
     apply_mouse_passthrough(app, !read_mouse_passthrough(app))
 }
 
+/// 在鼠标位置弹出与托盘**完全相同**的菜单（标题栏 / 专注模式拖拽条右键）。
+///
+/// 事件不需要在这里单独处理：托盘构建时注册的 `on_menu_event` 会收到**所有**
+/// 菜单事件——Tauri 源码里那句注释写得很明确：
+/// "this handler is called for any menu event, whether it is coming from this
+/// window, another window or from the tray icon menu"，而且它和 `App::on_menu_event`
+/// push 进的是**同一个** `menu.global_event_listeners` 列表。
+///
+/// 所以这里弹出的菜单和托盘菜单共用同一套处理逻辑，功能天然一致；
+/// 也正因如此**不能再注册第二个处理器**，否则每次点击会执行两遍，
+/// 像「窗口置顶」「鼠标穿透」这类 toggle 会互相抵消。
+#[tauri::command]
+fn popup_app_menu<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let menu = build_tray_menu(
+        &app,
+        read_focus_mode(&app),
+        read_always_on_top(&app),
+        read_mouse_passthrough(&app),
+    )
+    .map_err(|e| format!("构建菜单失败: {e}"))?;
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+
+    menu.popup(window.as_ref().window())
+        .map_err(|e| format!("弹出菜单失败: {e}"))
+}
+
 fn apply_always_on_top<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
     write_setting_bool(app, "alwaysOnTop", enabled)?;
     if let Some(w) = app.get_webview_window("main") {
@@ -1015,6 +1044,7 @@ pub fn run() {
             set_focus_mode,
             set_always_on_top,
             set_mouse_passthrough,
+            popup_app_menu,
             update_shortcuts,
             webdav::webdav_set_config,
             webdav::webdav_get_config,

@@ -122,6 +122,17 @@ export function WidgetShell() {
   const locale = useMemo(() => resolveLocale(localeMode), [localeMode]);
 
   const noop = useCallback(() => {}, []);
+
+  /**
+   * 右键标题栏 / 专注模式拖拽条：弹出与托盘**完全相同**的菜单。
+   * 菜单事件由托盘注册的那套处理器统一接管（Tauri 的 on_menu_event 会收到
+   * 所有菜单事件），所以这里不需要任何后续处理。
+   */
+  const openAppMenu = useCallback(() => {
+    void invoke("popup_app_menu").catch((e) =>
+      console.warn("[LiteNote] 弹出菜单失败:", e),
+    );
+  }, []);
   const noopContextMenu = useCallback((_e: React.MouseEvent, _id: string) => {}, []);
   const noopChangeText = useCallback((_id: string, _text: string) => {}, []);
 
@@ -351,7 +362,10 @@ export function WidgetShell() {
             }
           >
             {/* 拖拽条始终占位（高度不变、切换时文字不跳），受限形态下仅禁用拖动 */}
-            <FocusDragHandle draggable={windowMode.movable} />
+            <FocusDragHandle
+              draggable={windowMode.movable}
+              onContextMenu={openAppMenu}
+            />
             <TodoList
               focusMode
               locale={locale}
@@ -382,6 +396,7 @@ export function WidgetShell() {
           onToggleAlwaysOnTop={() => setAlwaysOnTop(!alwaysOnTop)}
           mousePassthrough={mousePassthrough}
           onEnableMousePassthrough={() => setMousePassthrough(true)}
+          onContextMenu={openAppMenu}
           onOpenAbout={() => setShowAbout(true)}
           onOpenSettings={() => setShowSettings(true)}
           onHide={handleHide}

@@ -13,6 +13,8 @@ interface HeaderBarProps {
   mousePassthrough: boolean;
   /** 开启鼠标穿透（只用于开启，关闭走托盘） */
   onEnableMousePassthrough: () => void;
+  /** 右键标题：弹出与托盘完全一致的菜单（穿透开启时界面点不到，自然不可用） */
+  onContextMenu?: () => void;
   onOpenSettings: () => void;
   onOpenAbout: () => void;
   onHide: () => void;
@@ -37,6 +39,7 @@ export function HeaderBar({
   onToggleAlwaysOnTop,
   mousePassthrough,
   onEnableMousePassthrough,
+  onContextMenu,
   onOpenSettings,
   onOpenAbout,
   onHide,
@@ -56,6 +59,12 @@ export function HeaderBar({
       className="flex h-[33px] shrink-0 cursor-grab select-none items-center px-1 active:cursor-grabbing"
       style={{ borderBottom: `1px solid var(--ln-theme-header-border)` }}
       data-tauri-drag-region
+      onContextMenu={(e) => {
+        // 开启穿透后整个界面都点不到，无需再判断；未开启时右键弹托盘同款菜单
+        if (mousePassthrough) return;
+        e.preventDefault();
+        onContextMenu?.();
+      }}
     >
       <div
         className="flex min-h-0 min-w-0 flex-1 items-center gap-1.5 self-stretch pl-2 pr-2"

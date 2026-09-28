@@ -86,13 +86,12 @@ button {
   -webkit-app-region: no-drag;
 }
 /*
-  专注模式顶部拖拽条：鼠标穿透开启时窗口不允许移动，
-  但这条要保留占位（高度不变，切换时文字才不会跳动），只把拖拽区域关掉。
-  用类选择器提高优先级，避免依赖上面两条规则的书写顺序。
+  注：这里原本有一条规则
+      [data-tauri-drag-region].ln-no-drag-handle { -webkit-app-region: no-drag; }
+  用来"禁止拖拽"，但 -webkit-app-region 是 **Electron** 的 API，Tauri 完全不认，
+  所以它从未生效 —— 这正是「专注 + 穿透」时窗口仍然能被拖动的原因。
+  正确做法是不渲染 data-tauri-drag-region 属性本身，见 FocusDragHandle.tsx。
 */
-[data-tauri-drag-region].ln-no-drag-handle {
-  -webkit-app-region: no-drag;
-}
 
 /* ══════════════════════════════════════════════════
    钉钉式提醒弹窗：完全无边框、占满 WebView
