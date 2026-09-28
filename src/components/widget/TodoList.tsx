@@ -66,9 +66,9 @@ export function TodoList({
       activeSorted: sortTodos(active),
       completedSorted: sortTodos(done),
       activeIds: active.map((x) => x.id),
-      completedBuckets: bucketCompletedByTime(done),
+      completedBuckets: bucketCompletedByTime(done, locale),
     };
-  }, [todos, selectedDate]);
+  }, [todos, selectedDate, locale]);
 
   // 已完成视图：分组折叠态（默认全部展开）
   const [collapsedBuckets, setCollapsedBuckets] = useState<
@@ -122,15 +122,8 @@ export function TodoList({
     );
   }
 
-  // 已完成视图：按完成时间互斥分桶渲染
+  // 已完成视图：按完成时间互斥分桶渲染（分组标题由 todoSort 一并算好）
   if (todoView === "completed") {
-    const bucketTitles: Record<string, string> = {
-      today: t(locale, "completedToday"),
-      "3days": t(locale, "completed3Days"),
-      "7days": t(locale, "completed7Days"),
-      "30days": t(locale, "completed30Days"),
-      older: t(locale, "completedOlder"),
-    };
     const visibleBuckets = completedBuckets.filter((b) => b.items.length > 0);
 
     if (visibleBuckets.length === 0) {
@@ -164,7 +157,7 @@ export function TodoList({
                   }
                 >
                   <span>
-                    {bucketTitles[bucket.id]} ({bucket.items.length})
+                    {bucket.title} ({bucket.items.length})
                   </span>
                   <span
                     className="text-xs"

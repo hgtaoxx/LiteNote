@@ -27,6 +27,13 @@ const TODO_TEXT_STYLE: React.CSSProperties = {
 // 行距：原来 py-1.5（上下各 6px）行与行之间显得很空，收成 py-0.5（上下各 2px）
 const TODO_ROW_PAD_Y = "py-0.5";
 
+/**
+ * 创建 / 完成日期的字号。
+ * 中文「六号」≈ 7.5pt ≈ 10px，用户反馈偏大，收成 9px（暂定值，要调改这一个数字）。
+ * 进行中与已完成共用，保证两者显示格式一致。
+ */
+const DATE_FONT_SIZE = 9;
+
 interface TodoRowProps {
   todo: TodoItem;
   locale: Locale;
@@ -382,35 +389,33 @@ function ManagementTodoRow({
       </button>
 
       {/*
-        未完成：行右侧显示创建日期。右边缘与上方星期（时钟区右列）同一条边界。
-        字号六号（≈10px），暂定，后续要调就改这个数字。
-      */}
-      {!todo.completed && todo.createTime > 0 ? (
-        <span
-          className="shrink-0"
-          style={{ fontSize: 10, color: "var(--ln-theme-text-muted)" }}
-        >
-          {formatStamp(todo.createTime, locale)}
-        </span>
-      ) : null}
+        日期行：**进行中与已完成共用同一套版式**（用户明确要求两者显示格式一致）。
 
-      {/*
-        已完成：内容下方两角——
-          左下角 = 创建日期，与上方「重要程度」圆点同一条左边界；
-          右下角 = 完成日期，与上方星期同一条右边界。
-        这里的 w-full 配合父级 flex-wrap，让它独占一整行、横跨整行宽度。
+          · 独占一整行：父级 flex-wrap + 这里的 w-full，横跨整行宽度
+          · 创建日期在左，与「重要程度」圆点同一条左边界
+          · 完成日期在右（仅已完成有）
+          · 左右各内缩 1 个字符（1em 跟着字号走，所以字号改了内缩同步变）
+          · 紧跟在正文下方：正文的上边距不变，下方留出更宽一点的空档，
+            日期几乎贴着行底（行自身的 pb 只留 2px）
       */}
-      {todo.completed ? (
+      {todo.completed || todo.createTime > 0 ? (
         <div
           className="flex w-full items-center justify-between"
-          style={{ fontSize: 10, lineHeight: 1.4 }}
+          style={{
+            fontSize: DATE_FONT_SIZE,
+            lineHeight: 1.3,
+            marginTop: 3,
+            padding: "0 1em",
+          }}
         >
           <span style={{ color: "var(--ln-theme-text-muted)" }}>
             {formatStamp(todo.createTime, locale)}
           </span>
-          <span style={{ color: "var(--ln-theme-text-muted)" }}>
-            {formatStamp(todo.completedTime, locale)}
-          </span>
+          {todo.completed ? (
+            <span style={{ color: "var(--ln-theme-text-muted)" }}>
+              {formatStamp(todo.completedTime, locale)}
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>
