@@ -322,8 +322,12 @@ function AboutTab({ locale }: { locale: Locale }) {
   return (
     <section className="space-y-3">
       <h3
-        className="text-sm font-medium"
-        style={{ color: "var(--ln-theme-text)" }}
+        className="rounded-md px-2.5 py-1.5 text-sm font-medium"
+        style={{
+          color: "var(--ln-theme-text)",
+          background: "var(--ln-theme-surface)",
+          boxShadow: "0 1px 2px rgba(0,0,0,0.07), 0 2px 6px rgba(0,0,0,0.06)",
+        }}
       >
         {mk("settingsTabAbout")}
       </h3>
@@ -336,10 +340,15 @@ function AboutTab({ locale }: { locale: Locale }) {
           : "Lightweight local to-do note widget. Your data stays on your machine."}
       </p>
 
-      {/* 全局快捷键（原「快捷键」标签页的内容）——标题与上面的「关于」同字号、同左对齐 */}
+      {/* 全局快捷键（原「快捷键」标签页的内容）——标题与上面的「关于」同字号、同左对齐，
+          同样带底色与阴影，两个小标题在视觉上都能和正文区分开 */}
       <h3
-        className="text-sm font-medium pt-1"
-        style={{ color: "var(--ln-theme-text)" }}
+        className="rounded-md px-2.5 py-1.5 text-sm font-medium"
+        style={{
+          color: "var(--ln-theme-text)",
+          background: "var(--ln-theme-surface)",
+          boxShadow: "0 1px 2px rgba(0,0,0,0.07), 0 2px 6px rgba(0,0,0,0.06)",
+        }}
       >
         {mk("settingsTabShortcuts")}
       </h3>
@@ -932,11 +941,11 @@ export function SettingsModal({
         {/* 四个标签页共用同一个固定高度的内容区 —— 高度不一致会让切换时面板"跳大小"。
             取 340px 是为了容纳内容最多的「常规」页；窗口很矮时用 max-h 兜住，不会溢出。 */}
         {/* 四个标签页共用同一内容区。
-            宽度收 20% 并居中：这样四个页的左右边距完全一致（常规与同步对齐），
-            同时行内「标签 ↔ 右侧控件」之间的空隙也随之收窄。 */}
+            不加额外宽度/外边距：内容直接撑满卡片内容盒，左右边缘与上方标签栏
+            （常规…关于那颗药丸的外沿）完全对齐；常规、同步、关于因此天然一致。 */}
         <div
           className="h-[340px] max-h-[calc(90vh-140px)] overflow-y-auto overflow-x-auto"
-          style={{ scrollbarGutter: "stable", width: "80%", margin: "0 auto" }}
+          style={{ scrollbarGutter: "stable" }}
         >
         {tab === "sync" ? (
           <SyncSettings locale={locale} />
