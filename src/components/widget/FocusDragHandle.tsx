@@ -25,8 +25,13 @@ export function FocusDragHandle({
 }: FocusDragHandleProps) {
   return (
     <div
+      /*
+        高度 24px（原 16px）：窗口顶部约 4~8px 属于系统缩放边框（非客户区），
+        Windows 会把那里的右键直接抢去弹系统菜单、DOM 收不到事件。
+        加高之后下半部分稳定落在客户区，右键才能被我们接管。
+      */
       className={
-        "flex h-4 shrink-0 items-center justify-center " +
+        "flex h-6 shrink-0 items-center justify-center " +
         (draggable ? "cursor-grab active:cursor-grabbing" : "cursor-default")
       }
       data-tauri-drag-region={draggable ? "deep" : "false"}

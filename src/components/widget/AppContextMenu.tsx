@@ -7,35 +7,34 @@ interface AppContextMenuProps {
   locale: Locale;
   x: number;
   y: number;
-  /** 当前是否专注模式：决定第二项显示「专注模式」还是「完整模式」，以及是否出现「界面锁定」 */
-  isFocus: boolean;
-  /** 「界面锁定」是否已开启（专注模式下等同设置里的鼠标穿透） */
+  /** 「界面锁定」是否已开启（= 设置里的鼠标穿透 / 托盘里那一项） */
   locked: boolean;
   onHide: () => void;
-  onToggleFocus: () => void;
+  /** 切回完整模式 */
+  onSwitchToFull: () => void;
   onToggleLock: () => void;
-  onQuit: () => void;
   onClose: () => void;
 }
 
 /**
- * 标题栏 / 专注模式拖拽条的右键菜单 —— 精简三项：
- *   隐藏界面 · （专注模式 | 完整模式）· 退出
+ * 专注模式拖拽条**右半区**的右键菜单，三项：
+ *   隐藏界面 · 完整模式 · 界面锁定
  *
- * 为什么自己画而不用系统菜单：窗口是无边框的，在标题区域右键会弹出 Windows 的
- * 系统菜单（还原 / 移动 / 大小 / 最小化 / 最大化 / 关闭），与这个界面的语义
- * 完全对不上，而且那些项对本应用没有意义。所以自己用主题变量画一个精简版。
+ * 「界面锁定」就是设置里的鼠标穿透，但专注模式下并非真穿透——窗口仍需接收
+ * 鼠标事件才能上下滚动、勾选完成，所以在这个语境下叫「界面锁定」更准确。
+ * 已开启时用**主题底色高亮**表示状态，不用勾号。
+ *
+ * 为什么自己画而不用系统菜单：窗口无边框，在标题/拖拽区域右键会弹出 Windows
+ * 的系统菜单（还原/移动/大小…），与本应用语义完全对不上。
  */
 export function AppContextMenu({
   locale,
   x,
   y,
-  isFocus,
   locked,
   onHide,
-  onToggleFocus,
+  onSwitchToFull,
   onToggleLock,
-  onQuit,
   onClose,
 }: AppContextMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -65,7 +64,7 @@ export function AppContextMenu({
     "flex w-full items-center px-2.5 py-1 text-left transition-colors hover:bg-[var(--ln-theme-surface-hover)]";
   const itemStyle: React.CSSProperties = {
     color: "var(--ln-theme-text)",
-    // 12.5px：与「常规」页下拉菜单同一量级，整体比之前更紧凑
+    // 12.5px：与「常规」页下拉菜单同一量级
     fontSize: 12.5,
   };
 
@@ -74,11 +73,6 @@ export function AppContextMenu({
     fn();
     onClose();
   };
-
-  /** 勾选栏占位：让四项文字左边缘对齐 */
-  const gutter = (
-    <span className="inline-block w-3.5 shrink-0" aria-hidden />
-  );
 
   return (
     <div
@@ -101,7 +95,6 @@ export function AppContextMenu({
         style={itemStyle}
         onClick={run(onHide)}
       >
-        {gutter}
         {mk("menuHideWindow")}
       </button>
       <button
@@ -109,42 +102,22 @@ export function AppContextMenu({
         role="menuitem"
         className={item}
         style={itemStyle}
-        onClick={run(onToggleFocus)}
+        onClick={run(onSwitchToFull)}
       >
-        {gutter}
-        {mk(isFocus ? "menuExitFocus" : "menuEnterFocus")}
+        {mk("menuExitFocus")}
       </button>
-
-      {/* 界面锁定：只在专注模式出现（= 设置里的「鼠标穿透」；专注下它不是真穿透） */}
-      {isFocus ? (
-        <button
-          type="button"
-          role="menuitem"
-          className={item}
-          style={itemStyle}
-          onClick={run(onToggleLock)}
-        >
-          <span className="inline-block w-3.5 shrink-0" aria-hidden>
-            {locked ? "✓" : ""}
-          </span>
-          {mk("menuLockUi")}
-        </button>
-      ) : null}
-
-      <div
-        className="my-1"
-        style={{ borderTop: "1px solid var(--ln-theme-border-light)" }}
-      />
-
       <button
         type="button"
         role="menuitem"
         className={item}
-        style={itemStyle}
-        onClick={run(onQuit)}
+        style={{
+          ...itemStyle,
+          // 已锁定时用主题底色高亮（跟随毛玻璃/深色/浅色等所有主题）
+          background: locked ? "var(--ln-theme-surface-active)" : "transparent",
+        }}
+        onClick={run(onToggleLock)}
       >
-        {gutter}
-        {mk("menuQuit")}
+        {mk("menuLockUi")}
       </button>
     </div>
   );

@@ -8,6 +8,7 @@ import {
   DEFAULT_SETTINGS,
   CONTENT_FONT_SIZE_MIN,
   CONTENT_FONT_SIZE_MAX,
+  type ShortcutKey,
   type ThemeId,
 } from "@/lib/db";
 
@@ -35,6 +36,7 @@ export interface SettingsState {
   shortcutToggleWindow: string;
   shortcutFocusMode: string;
   shortcutPin: string;
+  shortcutMousePassthrough: string;
   initialized: boolean;
   /** 最近一次 DB 写入错误信息，供 UI 展示 */
   lastError: string | null;
@@ -55,7 +57,7 @@ export interface SettingsActions {
   setTheme: (t: ThemeId) => void;
   setReminderMode: (m: "popup" | "system") => void;
   setFocusMode: (v: boolean) => void;
-  setShortcut: (key: "shortcutToggleWindow" | "shortcutFocusMode" | "shortcutPin", value: string) => void;
+  setShortcut: (key: ShortcutKey, value: string) => void;
   /** 供外部同步调用：用 DB 最新值覆盖 store */
   reloadFromDb: () => Promise<void>;
   clearError: () => void;

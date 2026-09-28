@@ -132,13 +132,6 @@ export function WidgetShell() {
     setAppMenu({ x: e.clientX, y: e.clientY });
   }, []);
 
-  /** 菜单「退出」：交给 Rust 退出整个应用（与托盘「退出」同一出口） */
-  const handleQuit = useCallback(() => {
-    void invoke("quit_app").catch((e) =>
-      console.warn("[LiteNote] 退出失败:", e),
-    );
-  }, []);
-
   // 注意：这里**不要**加全局的 contextmenu 拦截。
   // 曾经加过一层 document 级 preventDefault 想顺便压掉无边框窗口的系统菜单，
   // 结果把内容区（待办列表）原本的右键行为也一并挡住了。
@@ -412,10 +405,10 @@ export function WidgetShell() {
           onToggleAlwaysOnTop={() => setAlwaysOnTop(!alwaysOnTop)}
           mousePassthrough={mousePassthrough}
           onEnableMousePassthrough={() => setMousePassthrough(true)}
-          onContextMenu={openAppMenu}
+          onEnterFocus={() => setFocusMode(true)}
           onOpenAbout={() => setShowAbout(true)}
           onOpenSettings={() => setShowSettings(true)}
-          onEnterFocus={() => setFocusMode(true)}
+          onHide={handleHide}
         />
 
         <DndContext
@@ -555,12 +548,10 @@ export function WidgetShell() {
           locale={locale}
           x={appMenu.x}
           y={appMenu.y}
-          isFocus={focusMode}
           locked={mousePassthrough}
           onHide={handleHide}
-          onToggleFocus={() => setFocusMode(!focusMode)}
+          onSwitchToFull={() => setFocusMode(false)}
           onToggleLock={() => setMousePassthrough(!mousePassthrough)}
-          onQuit={handleQuit}
           onClose={closeAppMenu}
         />
       ) : null}

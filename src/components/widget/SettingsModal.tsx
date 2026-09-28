@@ -7,6 +7,7 @@ import {
   CONTENT_FONT_SIZE_MAX,
   CONTENT_FONT_SIZE_MIN,
   DEFAULT_SETTINGS,
+  type ShortcutKey,
   type ThemeId,
 } from "@/lib/db";
 import {
@@ -228,6 +229,8 @@ function CustomSelect<T extends string>({
 
 type SettingsTab = "general" | "shortcuts" | "sync";
 
+/** 快捷键名类型来自 @/lib/db（唯一来源），此处不再重复声明 */
+
 /** 内容字体 id → i18n key */
 const FONT_LABEL_KEYS: Record<ContentFontId, MessageKey> = {
   system: "fontSystem",
@@ -306,7 +309,7 @@ function SettingsTabs({
 
 /* ──────────── 快捷键编辑 ──────────── */
 
-type ShortcutKey = "shortcutToggleWindow" | "shortcutFocusMode" | "shortcutPin";
+/** 快捷键名类型统一来自 @/lib/db，此处不再本地声明 */
 
 /** 判断是否为 macOS */
 declare global {
@@ -424,7 +427,12 @@ function EditableShortcutRow({
         // 检查与其他快捷键冲突
         const state = useSettingsStore.getState();
         const conflict = (
-          ["shortcutToggleWindow", "shortcutFocusMode", "shortcutPin"] as ShortcutKey[]
+          [
+            "shortcutToggleWindow",
+            "shortcutFocusMode",
+            "shortcutPin",
+            "shortcutMousePassthrough",
+          ] as ShortcutKey[]
         ).some((k) => k !== shortcutKey && state[k] === shortcut);
         if (conflict) {
           setError(true);
@@ -1045,6 +1053,14 @@ export function SettingsModal({
             <EditableShortcutRow
               label={mk("shortcutPin")}
               shortcutKey="shortcutPin"
+              notSetText={mk("shortcutNotSet")}
+              pressKeysText={mk("shortcutPressKeys")}
+              conflictText={mk("shortcutConflict")}
+              clearLabel={mk("shortcutClear")}
+            />
+            <EditableShortcutRow
+              label={mk("shortcutMousePassthrough")}
+              shortcutKey="shortcutMousePassthrough"
               notSetText={mk("shortcutNotSet")}
               pressKeysText={mk("shortcutPressKeys")}
               conflictText={mk("shortcutConflict")}

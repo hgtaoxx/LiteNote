@@ -14,6 +14,17 @@ let _dbInitPromise: Promise<Database> | null = null;
 
 export type ThemeId = "glass" | "dark" | "light" | "yellow" | "gray" | "pink";
 
+/**
+ * 可自定义的全局快捷键名（唯一来源）。
+ * settingsStore、SettingsModal、以及 Rust 侧 register_all_shortcuts 里读取的
+ * 设置键必须与这里保持一致。
+ */
+export type ShortcutKey =
+  | "shortcutToggleWindow"
+  | "shortcutFocusMode"
+  | "shortcutPin"
+  | "shortcutMousePassthrough";
+
 /** 所有设置项的默认值，作为唯一真实来源 */
 export const DEFAULT_SETTINGS = {
   clockCollapsed: true,
@@ -37,6 +48,8 @@ export const DEFAULT_SETTINGS = {
   shortcutToggleWindow: "CmdOrCtrl+Shift+L",
   shortcutFocusMode: "CmdOrCtrl+Shift+F",
   shortcutPin: "CmdOrCtrl+Shift+P",
+  /** 鼠标穿透 / 专注模式下的界面锁定（M = 鼠标 Mouse） */
+  shortcutMousePassthrough: "CmdOrCtrl+Shift+M",
   // WebDAV 同步（密码不在此处，由 Rust 端加密存储）
   webdavEnabled: false,
   webdavUrl: "",
@@ -69,6 +82,7 @@ export interface AppSettings {
   readonly shortcutToggleWindow: string;
   readonly shortcutFocusMode: string;
   readonly shortcutPin: string;
+  readonly shortcutMousePassthrough: string;
   readonly webdavEnabled: boolean;
   readonly webdavUrl: string;
   readonly webdavUser: string;

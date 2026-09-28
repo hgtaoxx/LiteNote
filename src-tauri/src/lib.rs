@@ -870,25 +870,33 @@ pub(crate) fn read_setting_string_app<R: Runtime>(
 
 /// 从 settings 表读取快捷键配置并注册全局快捷键（空字符串 = 不注册）
 fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let (toggle_window, toggle_focus, toggle_pin) = match litenote_db_path(app) {
-        Some(db_path) if db_path.exists() => match Connection::open(&db_path) {
-            Ok(conn) => (
-                read_setting_string(&conn, "shortcutToggleWindow", "CmdOrCtrl+Shift+L"),
-                read_setting_string(&conn, "shortcutFocusMode", "CmdOrCtrl+Shift+F"),
-                read_setting_string(&conn, "shortcutPin", "CmdOrCtrl+Shift+P"),
-            ),
-            Err(_) => (
+    let (toggle_window, toggle_focus, toggle_pin, toggle_passthrough) =
+        match litenote_db_path(app) {
+            Some(db_path) if db_path.exists() => match Connection::open(&db_path) {
+                Ok(conn) => (
+                    read_setting_string(&conn, "shortcutToggleWindow", "CmdOrCtrl+Shift+L"),
+                    read_setting_string(&conn, "shortcutFocusMode", "CmdOrCtrl+Shift+F"),
+                    read_setting_string(&conn, "shortcutPin", "CmdOrCtrl+Shift+P"),
+                    read_setting_string(
+                        &conn,
+                        "shortcutMousePassthrough",
+                        "CmdOrCtrl+Shift+M",
+                    ),
+                ),
+                Err(_) => (
+                    "CmdOrCtrl+Shift+L".to_string(),
+                    "CmdOrCtrl+Shift+F".to_string(),
+                    "CmdOrCtrl+Shift+P".to_string(),
+                    "CmdOrCtrl+Shift+M".to_string(),
+                ),
+            },
+            _ => (
                 "CmdOrCtrl+Shift+L".to_string(),
                 "CmdOrCtrl+Shift+F".to_string(),
                 "CmdOrCtrl+Shift+P".to_string(),
+                "CmdOrCtrl+Shift+M".to_string(),
             ),
-        },
-        _ => (
-            "CmdOrCtrl+Shift+L".to_string(),
-            "CmdOrCtrl+Shift+F".to_string(),
-            "CmdOrCtrl+Shift+P".to_string(),
-        ),
-    };
+        };
 
     let mut errors: Vec<String> = Vec::new();
 
@@ -929,6 +937,20 @@ fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> 
             },
         ) {
             errors.push(format!("{toggle_pin}: {e}"));
+        }
+    }
+
+    // 鼠标穿透 / 界面锁定：开启后界面点不到，所以快捷键是唯一的"关回来"方式之一
+    if !toggle_passthrough.is_empty() {
+        if let Err(e) = app.global_shortcut().on_shortcut(
+            toggle_passthrough.as_str(),
+            move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    let _ = toggle_mouse_passthrough(app);
+                }
+            },
+        ) {
+            errors.push(format!("{toggle_passthrough}: {e}"));
         }
     }
 

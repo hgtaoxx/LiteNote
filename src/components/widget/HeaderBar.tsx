@@ -13,12 +13,12 @@ interface HeaderBarProps {
   mousePassthrough: boolean;
   /** 开启鼠标穿透（只用于开启，关闭走托盘） */
   onEnableMousePassthrough: () => void;
-  /** 右键标题：弹出精简菜单（隐藏界面 / 专注模式 / 退出） */
-  onContextMenu?: (e: React.MouseEvent) => void;
+  /** 切换专注模式（按钮置于「鼠标穿透」左侧） */
+  onEnterFocus: () => void;
   onOpenSettings: () => void;
   onOpenAbout: () => void;
-  /** 右上角按钮：进入专注模式（原「隐藏到托盘」已改到这里） */
-  onEnterFocus: () => void;
+  /** 隐藏到托盘（标题栏不再有右键菜单，按钮恢复） */
+  onHide: () => void;
 }
 
 const iconBtn =
@@ -40,10 +40,10 @@ export function HeaderBar({
   onToggleAlwaysOnTop,
   mousePassthrough,
   onEnableMousePassthrough,
-  onContextMenu,
+  onEnterFocus,
   onOpenSettings,
   onOpenAbout,
-  onEnterFocus,
+  onHide,
 }: HeaderBarProps) {
   const mk = (key: MessageKey) => t(locale, key);
   const [version, setVersion] = useState("");
@@ -60,12 +60,6 @@ export function HeaderBar({
       className="flex h-[33px] shrink-0 cursor-grab select-none items-center px-1 active:cursor-grabbing"
       style={{ borderBottom: `1px solid var(--ln-theme-header-border)` }}
       data-tauri-drag-region
-      onContextMenu={(e) => {
-        // 开启穿透后整个界面都点不到，无需再判断
-        if (mousePassthrough) return;
-        e.preventDefault();
-        onContextMenu?.(e);
-      }}
     >
       <div
         className="flex min-h-0 min-w-0 flex-1 items-center gap-1.5 self-stretch pl-2 pr-2"
@@ -82,6 +76,26 @@ export function HeaderBar({
         className="flex cursor-default items-center gap-0.5 pr-1"
         data-tauri-no-drag
       >
+        {/* 专注模式开关：置于「鼠标穿透」左侧 */}
+        <button
+          type="button"
+          className={iconBtn}
+          style={iconStyle}
+          title={mk("menuEnterFocus")}
+          aria-label={mk("menuEnterFocus")}
+          onClick={onEnterFocus}
+        >
+          {/* 聚焦准星：中心圆 + 四个方向的内折线 */}
+          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
+            <circle cx="12" cy="12" r="3.2" stroke="currentColor" strokeWidth="1.5" />
+            <path
+              d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
+        </button>
         {/* 鼠标穿透：置于「帮助」左侧；开启后整个界面点不到，只能从托盘关闭 */}
         <button
           type="button"
@@ -166,24 +180,17 @@ export function HeaderBar({
         >
           <Icon name={alwaysOnTop ? "pushpin-fill" : "pushpin-line"} className="h-3.5 w-3.5" />
         </button>
-        {/* 进入专注模式（原「隐藏到托盘」；隐藏仍可从右键菜单或托盘进行） */}
+        {/* 隐藏到托盘 */}
         <button
           type="button"
           className={iconBtn}
           style={iconStyle}
-          title={mk("menuEnterFocus")}
-          aria-label={mk("menuEnterFocus")}
-          onClick={onEnterFocus}
+          title={mk("hideWindow")}
+          aria-label={mk("hideWindow")}
+          onClick={onHide}
         >
-          {/* 聚焦准星：中心圆 + 四个方向的内折线 */}
           <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <circle cx="12" cy="12" r="3.2" stroke="currentColor" strokeWidth="1.5" />
-            <path
-              d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
+            <path d="M6 12h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
         </button>
       </div>
