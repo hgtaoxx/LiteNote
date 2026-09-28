@@ -495,98 +495,10 @@ fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 /// 放在 Rust 侧统一施加：托盘、快捷键、启动恢复都经过这里，
 /// 且不依赖前端的 window 插件权限。
 fn apply_effective_passthrough<R: Runtime>(app: &AppHandle<R>) {
-    let passthrough = read_mouse_passthrough(app);
-    let focus = read_focus_mode(app);
-    let real_passthrough = passthrough && !focus;
-    let locked = passthrough && focus;
-
+    let enabled = read_mouse_passthrough(app) && !read_focus_mode(app);
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_ignore_cursor_events(real_passthrough);
-
-        /*
-          「专注 + 穿透」= 界面锁定：在 Rust 侧也把「禁止缩放」落实一遍。
-          原来只靠前端调 setResizable，一旦前端状态没同步、或 window 插件权限异常，
-          就会静默失效（表现为「开了锁定还是能拉」）。
-
-          注意：这里只动 resizable，不动 min/max —— 专注模式的正方形尺寸是前端
-          算好再 setSize 设的，若在这里抢先锁死 min=max，前端的 setSize 会被夹住。
-        */
-        let _ = w.set_resizable(!locked);
-
-        // set_resizable 会让 TAO 重新套用窗口样式（并把标题栏样式加回来），
-        // 所以每次改完都要按 locked 重新收敛一次边框样式。
-        set_window_frame_styles(&w, locked);
+        let _ = w.set_ignore_cursor_events(enabled);
     }
-}
-
-/// Windows：按「是否界面锁定」收敛窗口边框样式。
-///
-/// 背景：TAO 的 `WindowFlags::to_window_styles()`
-/// （tao-0.35.2/src/platform_impl/windows/window_state.rs:244）会**无条件**加上
-/// `WS_CAPTION | WS_SYSMENU`，只有「计算尺寸」的两条路径才为无边框窗口去掉它们。
-/// 于是运行时的窗口仍带着标题区域：窗口最顶那一条被 Windows 当成标题栏 ——
-/// 左键拖它=移动窗口、右键点它=弹系统菜单，两者都绕过 WebView，前端收不到事件。
-///
-/// 取值策略（关键）：
-///   · **锁定**（专注 + 穿透）→ 三种样式全剥掉（`WS_CAPTION | WS_SYSMENU |
-///     WS_THICKFRAME`）：既然锁定了就不该能拖动、也不该能拉伸，剥掉全部边框
-///     样式后 Windows 不会再画任何边框。
-///   · **其它情况** → 只把 `WS_CAPTION | WS_SYSMENU` 加回来（`WS_THICKFRAME`
-///     由 set_resizable(true) 负责），完整模式维持原样：可拉伸、外观不变。
-///
-/// ⚠️ 上一版只剥 CAPTION 却保留 THICKFRAME，结果变成「没有标题栏、只剩可拉伸
-/// 边框」的窗口 —— Windows 会画出一条可见边框，那正是用户看到的蓝色外框。
-///
-/// 改完样式必须 `SetWindowPos(..., SWP_FRAMECHANGED)` 通知窗口重算非客户区，
-/// 否则样式改动对命中测试与绘制不生效。
-#[cfg(windows)]
-fn set_window_frame_styles<R: Runtime>(w: &tauri::WebviewWindow<R>, locked: bool) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_SYSMENU, WS_THICKFRAME,
-    };
-
-    let Ok(hwnd) = w.hwnd() else {
-        return;
-    };
-    let hwnd = hwnd.0 as *mut core::ffi::c_void;
-
-    unsafe {
-        let style = GetWindowLongW(hwnd, GWL_STYLE);
-        let frame = (WS_CAPTION | WS_SYSMENU | WS_THICKFRAME) as i32;
-        let new_style = if locked {
-            style & !frame
-        } else {
-            style | (WS_CAPTION | WS_SYSMENU) as i32
-        };
-
-        if new_style != style {
-            SetWindowLongW(hwnd, GWL_STYLE, new_style);
-            SetWindowPos(
-                hwnd,
-                core::ptr::null_mut(),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn set_window_frame_styles<R: Runtime>(_w: &tauri::WebviewWindow<R>, _locked: bool) {}
-
-/// 供前端在改完窗口尺寸锁定（min/max）之后调用：再收敛一次边框样式。
-///
-/// 为什么需要：前端锁定尺寸时会调 setMinSize / setMaxSize，TAO 在这些操作里也会
-/// 重新套用窗口样式、把标题栏样式加回来；而那次调用发生在本文件的时序之外，
-/// 所以由前端在收尾时再触发一次，保证「最后落地的样式」永远是正确的。
-#[tauri::command]
-fn refresh_window_frame<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    apply_effective_passthrough(&app);
-    Ok(())
 }
 
 fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
@@ -1140,7 +1052,6 @@ pub fn run() {
             set_always_on_top,
             set_mouse_passthrough,
             quit_app,
-            refresh_window_frame,
             update_shortcuts,
             webdav::webdav_set_config,
             webdav::webdav_get_config,

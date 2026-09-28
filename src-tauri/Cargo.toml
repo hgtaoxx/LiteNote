@@ -38,10 +38,3 @@ base64 = "0.22"
 http = "1"
 rand = "0.8"
 
-# 仅 Windows：剥掉 TAO 无条件加上的标题栏 / 系统菜单样式（见 lib.rs strip_window_frame）
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-  "Win32_Foundation",
-  "Win32_UI_WindowsAndMessaging",
-] }
-
