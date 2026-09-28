@@ -16,7 +16,6 @@ import {
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 import { resolveLocale, t } from "@/i18n";
-import { AboutModal } from "./AboutModal";
 import { useWidgetActions } from "@/hooks/useWidgetActions";
 import { useFocusWindowSize } from "@/hooks/useFocusWindowSize";
 import { resolveWindowMode } from "@/lib/windowMode";
@@ -91,7 +90,6 @@ export function WidgetShell() {
   // 待办视图筛选：进行中 / 已完成
   const [todoView, setTodoView] = useState<"active" | "completed">("active");
   const [showSettings, setShowSettings] = useState(false);
-  const [showAbout, setShowAbout] = useState(false);
 
   // 直接获取 setTodoDueDate（拖拽到日历日期时需用）
   const setTodoDueDate = useTodoStore((s) => s.setTodoDueDate);
@@ -233,7 +231,6 @@ export function WidgetShell() {
     setMenu(null);
     handleEndEdit();
     setShowSettings(false);
-    setShowAbout(false);
   }, [focusMode, setMenu, handleEndEdit]);
 
   // 当前拖拽中的待办 id（用于 DragOverlay）
@@ -409,7 +406,6 @@ export function WidgetShell() {
           mousePassthrough={mousePassthrough}
           onEnableMousePassthrough={() => setMousePassthrough(true)}
           onEnterFocus={() => setFocusMode(true)}
-          onOpenAbout={() => setShowAbout(true)}
           onOpenSettings={() => setShowSettings(true)}
           onHide={handleHide}
         />
@@ -533,13 +529,6 @@ export function WidgetShell() {
           contentFontFamily={contentFontFamily}
           onSetContentFontFamily={setContentFontFamily}
           onClose={() => setShowSettings(false)}
-        />
-
-        {/* 关于模态框 */}
-        <AboutModal
-          open={showAbout}
-          locale={locale}
-          onClose={() => setShowAbout(false)}
         />
         </div>
         </div>

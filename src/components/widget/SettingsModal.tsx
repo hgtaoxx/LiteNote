@@ -227,7 +227,7 @@ function CustomSelect<T extends string>({
   );
 }
 
-type SettingsTab = "general" | "shortcuts" | "sync" | "about";
+type SettingsTab = "general" | "sync" | "about";
 
 /** 快捷键名类型来自 @/lib/db（唯一来源），此处不再重复声明 */
 
@@ -244,14 +244,12 @@ function SettingsTabs({
   tab,
   onTabChange,
   generalLabel,
-  shortcutsLabel,
   syncLabel,
   aboutLabel,
 }: {
   tab: SettingsTab;
   onTabChange: (t: SettingsTab) => void;
   generalLabel: string;
-  shortcutsLabel: string;
   syncLabel: string;
   aboutLabel: string;
 }) {
@@ -278,19 +276,6 @@ function SettingsTabs({
         onClick={() => onTabChange("general")}
       >
         {generalLabel}
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={tab === "shortcuts"}
-        className={btn(tab === "shortcuts")}
-        style={{
-          color: tab === "shortcuts" ? "var(--ln-theme-text)" : "var(--ln-theme-text-secondary)",
-          background: tab === "shortcuts" ? "var(--ln-theme-surface-active)" : "transparent",
-        }}
-        onClick={() => onTabChange("shortcuts")}
-      >
-        {shortcutsLabel}
       </button>
       <button
         type="button"
@@ -324,11 +309,16 @@ function SettingsTabs({
 }
 
 /**
- * 设置里的「关于」页（放在「同步」右侧）。
- * 内容就是原来那个关于弹窗的简介——外链（B站教程 / GitHub 源码）已按用户要求删除。
+ * 设置里的「关于」页：简介 + 全局快捷键。
+ *
+ * 原先「快捷键」是独立标签页，但内容不多、还占掉一个标签位；按用户反馈把它并到
+ * 这里（标题仍叫「关于」），顺带解决了「关于单开一页太空、太占地方」的问题。
+ * 外链（B站教程 / GitHub 源码）此前已按要求删除。
  */
 function AboutTab({ locale }: { locale: Locale }) {
   const isZh = locale === "zh-CN";
+  const mk = (key: MessageKey) => t(locale, key);
+
   return (
     <section className="space-y-3">
       <p
@@ -339,6 +329,45 @@ function AboutTab({ locale }: { locale: Locale }) {
           ? "轻量本地待办便签工具，数据存于本机，透明面板常驻桌面。"
           : "Lightweight local to-do note widget. Your data stays on your machine."}
       </p>
+
+      {/* 全局快捷键（原「快捷键」标签页的内容） */}
+      <div className="space-y-2.5">
+        <EditableShortcutRow
+          label={mk("shortcutHideWindow")}
+          shortcutKey="shortcutToggleWindow"
+          notSetText={mk("shortcutNotSet")}
+          pressKeysText={mk("shortcutPressKeys")}
+          conflictText={mk("shortcutConflict")}
+          clearLabel={mk("shortcutClear")}
+        />
+        <EditableShortcutRow
+          label={mk("shortcutFocusMode")}
+          shortcutKey="shortcutFocusMode"
+          notSetText={mk("shortcutNotSet")}
+          pressKeysText={mk("shortcutPressKeys")}
+          conflictText={mk("shortcutConflict")}
+          clearLabel={mk("shortcutClear")}
+        />
+        <EditableShortcutRow
+          label={mk("shortcutPin")}
+          shortcutKey="shortcutPin"
+          notSetText={mk("shortcutNotSet")}
+          pressKeysText={mk("shortcutPressKeys")}
+          conflictText={mk("shortcutConflict")}
+          clearLabel={mk("shortcutClear")}
+        />
+        <EditableShortcutRow
+          label={mk("shortcutMousePassthrough")}
+          shortcutKey="shortcutMousePassthrough"
+          notSetText={mk("shortcutNotSet")}
+          pressKeysText={mk("shortcutPressKeys")}
+          conflictText={mk("shortcutConflict")}
+          clearLabel={mk("shortcutClear")}
+        />
+        <p className="text-xs pt-1" style={{ color: "var(--ln-theme-text-muted)" }}>
+          {mk("shortcutHint")}
+        </p>
+      </div>
     </section>
   );
 }
@@ -884,7 +913,6 @@ export function SettingsModal({
           tab={tab}
           onTabChange={setTab}
           generalLabel={mk("settingsTabGeneral")}
-          shortcutsLabel={mk("settingsTabShortcuts")}
           syncLabel={mk("syncTab")}
           aboutLabel={mk("settingsTabAbout")}
         />
@@ -898,6 +926,8 @@ export function SettingsModal({
         {tab === "sync" ? (
           <SyncSettings locale={locale} />
         ) : tab === "general" ? (
+          /* 常规内容横向收 20%（容器居中）：标签与右侧控件之间不再拉得那么开 */
+          <div style={{ width: "80%", margin: "0 auto" }}>
           <>
         {/* 外观 */}
         <section className="mb-3">
@@ -1069,44 +1099,7 @@ export function SettingsModal({
           </div>
         </section>
           </>
-        ) : tab === "shortcuts" ? (
-          <section className="space-y-2.5">
-            <EditableShortcutRow
-              label={mk("shortcutHideWindow")}
-              shortcutKey="shortcutToggleWindow"
-              notSetText={mk("shortcutNotSet")}
-              pressKeysText={mk("shortcutPressKeys")}
-              conflictText={mk("shortcutConflict")}
-              clearLabel={mk("shortcutClear")}
-            />
-            <EditableShortcutRow
-              label={mk("shortcutFocusMode")}
-              shortcutKey="shortcutFocusMode"
-              notSetText={mk("shortcutNotSet")}
-              pressKeysText={mk("shortcutPressKeys")}
-              conflictText={mk("shortcutConflict")}
-              clearLabel={mk("shortcutClear")}
-            />
-            <EditableShortcutRow
-              label={mk("shortcutPin")}
-              shortcutKey="shortcutPin"
-              notSetText={mk("shortcutNotSet")}
-              pressKeysText={mk("shortcutPressKeys")}
-              conflictText={mk("shortcutConflict")}
-              clearLabel={mk("shortcutClear")}
-            />
-            <EditableShortcutRow
-              label={mk("shortcutMousePassthrough")}
-              shortcutKey="shortcutMousePassthrough"
-              notSetText={mk("shortcutNotSet")}
-              pressKeysText={mk("shortcutPressKeys")}
-              conflictText={mk("shortcutConflict")}
-              clearLabel={mk("shortcutClear")}
-            />
-            <p className="text-xs pt-1" style={{ color: "var(--ln-theme-text-muted)" }}>
-              {mk("shortcutHint")}
-            </p>
-          </section>
+          </div>
         ) : (
           <AboutTab locale={locale} />
         )}

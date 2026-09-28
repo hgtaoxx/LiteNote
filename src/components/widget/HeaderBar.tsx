@@ -16,7 +16,6 @@ interface HeaderBarProps {
   /** 切换专注模式（按钮置于「鼠标穿透」左侧） */
   onEnterFocus: () => void;
   onOpenSettings: () => void;
-  onOpenAbout: () => void;
   /** 隐藏到托盘（标题栏不再有右键菜单，按钮恢复） */
   onHide: () => void;
 }
@@ -42,7 +41,6 @@ export function HeaderBar({
   onEnableMousePassthrough,
   onEnterFocus,
   onOpenSettings,
-  onOpenAbout,
   onHide,
 }: HeaderBarProps) {
   const mk = (key: MessageKey) => t(locale, key);
@@ -133,19 +131,6 @@ export function HeaderBar({
                 strokeLinecap="round"
               />
             ) : null}
-          </svg>
-        </button>
-        <button
-          type="button"
-          className={iconBtn}
-          style={iconStyle}
-          title={mk("helpTitle")}
-          onClick={onOpenAbout}
-        >
-          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" />
-            <line x1="12" y1="8" x2="12" y2="8.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            <line x1="12" y1="12" x2="12" y2="16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </button>
         <button
