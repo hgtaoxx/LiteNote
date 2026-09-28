@@ -33,6 +33,7 @@ import { HeaderBar } from "./HeaderBar";
 import { RecurrencePicker } from "./RecurrencePicker";
 import { SettingsModal } from "./SettingsModal";
 import { TodoContextMenu } from "./TodoContextMenu";
+import { AppContextMenu } from "./AppContextMenu";
 import { TodoList } from "./TodoList";
 import { WeekCalendar } from "./WeekCalendar";
 import { FocusDragHandle } from "./FocusDragHandle";
@@ -62,6 +63,7 @@ export function WidgetShell() {
   const setShowSeconds = useSettingsStore((s) => s.setShowSeconds);
   const mousePassthrough = useSettingsStore((s) => s.mousePassthrough);
   const setMousePassthrough = useSettingsStore((s) => s.setMousePassthrough);
+  const setFocusMode = useSettingsStore((s) => s.setFocusMode);
   const contentFontSize = useSettingsStore((s) => s.contentFontSize);
   const setContentFontSize = useSettingsStore((s) => s.setContentFontSize);
   const contentFontFamily = useSettingsStore((s) => s.contentFontFamily);
@@ -123,15 +125,30 @@ export function WidgetShell() {
 
   const noop = useCallback(() => {}, []);
 
-  /**
-   * 右键标题栏 / 专注模式拖拽条：弹出与托盘**完全相同**的菜单。
-   * 菜单事件由托盘注册的那套处理器统一接管（Tauri 的 on_menu_event 会收到
-   * 所有菜单事件），所以这里不需要任何后续处理。
-   */
-  const openAppMenu = useCallback(() => {
-    void invoke("popup_app_menu").catch((e) =>
-      console.warn("[LiteNote] 弹出菜单失败:", e),
+  /** 右键标题栏 / 专注模式拖拽条弹出的精简菜单位置（null = 未打开） */
+  const [appMenu, setAppMenu] = useState<{ x: number; y: number } | null>(null);
+  const closeAppMenu = useCallback(() => setAppMenu(null), []);
+  const openAppMenu = useCallback((e: React.MouseEvent) => {
+    setAppMenu({ x: e.clientX, y: e.clientY });
+  }, []);
+
+  /** 菜单「退出」：交给 Rust 退出整个应用（与托盘「退出」同一出口） */
+  const handleQuit = useCallback(() => {
+    void invoke("quit_app").catch((e) =>
+      console.warn("[LiteNote] 退出失败:", e),
     );
+  }, []);
+
+  /**
+   * 无边框窗口在标题区域右键会弹出 **Windows 系统菜单**
+   * （还原 / 移动 / 大小 / 最小化 / 最大化 / 关闭），与界面语义完全对不上。
+   * 各处的 onContextMenu 已经 preventDefault，这里再兜一层，
+   * 阻止 webview 的默认右键行为，确保只显示我们自己的菜单。
+   */
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => e.preventDefault();
+    document.addEventListener("contextmenu", onCtx);
+    return () => document.removeEventListener("contextmenu", onCtx);
   }, []);
   const noopContextMenu = useCallback((_e: React.MouseEvent, _id: string) => {}, []);
   const noopChangeText = useCallback((_id: string, _text: string) => {}, []);
@@ -399,7 +416,7 @@ export function WidgetShell() {
           onContextMenu={openAppMenu}
           onOpenAbout={() => setShowAbout(true)}
           onOpenSettings={() => setShowSettings(true)}
-          onHide={handleHide}
+          onEnterFocus={() => setFocusMode(true)}
         />
 
         <DndContext
@@ -532,6 +549,20 @@ export function WidgetShell() {
         </div>
         </div>
       )}
+
+      {/* 标题栏 / 专注拖拽条的右键精简菜单（两种模式下都提供） */}
+      {appMenu ? (
+        <AppContextMenu
+          locale={locale}
+          x={appMenu.x}
+          y={appMenu.y}
+          isFocus={focusMode}
+          onHide={handleHide}
+          onToggleFocus={() => setFocusMode(!focusMode)}
+          onQuit={handleQuit}
+          onClose={closeAppMenu}
+        />
+      ) : null}
 
       {!focusMode && menu && menuTodo ? (
         <TodoContextMenu

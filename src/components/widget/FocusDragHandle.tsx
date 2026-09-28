@@ -2,16 +2,20 @@ interface FocusDragHandleProps {
   /**
    * 是否可拖动窗口。
    *
-   * ⚠️ 关键：不可拖动时必须**不渲染 `data-tauri-drag-region`**。
-   * Tauri 只认这个属性（由它注入的脚本监听 mousedown 后调用 startDragging），
-   * 而 `-webkit-app-region: no-drag` 是 **Electron** 的 API，Tauri 完全不理会——
-   * 之前就是这样写的，所以「专注 + 穿透」本该锁死却仍然能拖。
+   * Tauri 的拖拽区域**只认 `data-tauri-drag-region` 属性**，取值语义见
+   * `tauri/src/window/scripts/drag.js`：
+   *   · 裸值 / "true" → 只有直接点在该元素上才拖
+   *   · "deep"        → 子树任意位置都能拖
+   *   · "false"       → 显式禁止，**并且阻断祖先的拖拽区域**
    *
-   * 高度由 h-4 固定，所以切换穿透时文字不会上下跳动。
+   * 注意：`-webkit-app-region: no-drag` 是 **Electron** 的 API，Tauri 完全不认，
+   * 以前就是靠它"禁止拖拽"，所以从未生效、专注+穿透时窗口仍能被拖动。
+   *
+   * 高度由 h-4 固定，因此切换穿透时文字不会上下跳动。
    */
   draggable?: boolean;
-  /** 右键：弹出与托盘完全一致的菜单 */
-  onContextMenu?: () => void;
+  /** 右键：弹出精简菜单（隐藏界面 / 完整模式 / 退出） */
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /** 专注模式顶部拖拽条：始终占位，按需决定能否拖动 */
@@ -25,12 +29,8 @@ export function FocusDragHandle({
         "flex h-4 shrink-0 items-center justify-center " +
         (draggable ? "cursor-grab active:cursor-grabbing" : "cursor-default")
       }
-      // 只有可拖动时才挂拖拽区域
-      {...(draggable ? { "data-tauri-drag-region": true } : {})}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onContextMenu?.();
-      }}
+      data-tauri-drag-region={draggable ? "deep" : "false"}
+      onContextMenu={onContextMenu}
       aria-hidden
     >
       <span

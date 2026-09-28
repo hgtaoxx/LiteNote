@@ -13,11 +13,12 @@ interface HeaderBarProps {
   mousePassthrough: boolean;
   /** 开启鼠标穿透（只用于开启，关闭走托盘） */
   onEnableMousePassthrough: () => void;
-  /** 右键标题：弹出与托盘完全一致的菜单（穿透开启时界面点不到，自然不可用） */
-  onContextMenu?: () => void;
+  /** 右键标题：弹出精简菜单（隐藏界面 / 专注模式 / 退出） */
+  onContextMenu?: (e: React.MouseEvent) => void;
   onOpenSettings: () => void;
   onOpenAbout: () => void;
-  onHide: () => void;
+  /** 右上角按钮：进入专注模式（原「隐藏到托盘」已改到这里） */
+  onEnterFocus: () => void;
 }
 
 const iconBtn =
@@ -42,7 +43,7 @@ export function HeaderBar({
   onContextMenu,
   onOpenSettings,
   onOpenAbout,
-  onHide,
+  onEnterFocus,
 }: HeaderBarProps) {
   const mk = (key: MessageKey) => t(locale, key);
   const [version, setVersion] = useState("");
@@ -60,10 +61,10 @@ export function HeaderBar({
       style={{ borderBottom: `1px solid var(--ln-theme-header-border)` }}
       data-tauri-drag-region
       onContextMenu={(e) => {
-        // 开启穿透后整个界面都点不到，无需再判断；未开启时右键弹托盘同款菜单
+        // 开启穿透后整个界面都点不到，无需再判断
         if (mousePassthrough) return;
         e.preventDefault();
-        onContextMenu?.();
+        onContextMenu?.(e);
       }}
     >
       <div
@@ -165,9 +166,24 @@ export function HeaderBar({
         >
           <Icon name={alwaysOnTop ? "pushpin-fill" : "pushpin-line"} className="h-3.5 w-3.5" />
         </button>
-        <button type="button" className={iconBtn} style={iconStyle} title={mk("hideWindow")} onClick={onHide}>
+        {/* 进入专注模式（原「隐藏到托盘」；隐藏仍可从右键菜单或托盘进行） */}
+        <button
+          type="button"
+          className={iconBtn}
+          style={iconStyle}
+          title={mk("menuEnterFocus")}
+          aria-label={mk("menuEnterFocus")}
+          onClick={onEnterFocus}
+        >
+          {/* 聚焦准星：中心圆 + 四个方向的内折线 */}
           <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <path d="M6 12h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            <circle cx="12" cy="12" r="3.2" stroke="currentColor" strokeWidth="1.5" />
+            <path
+              d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
           </svg>
         </button>
       </div>
