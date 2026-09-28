@@ -45,10 +45,12 @@ const DATE_FONT_SIZE = 9;
 
 /**
  * 日期与正文之间的**可见**距离。
- * 6px → 3px（用户反馈再缩小一半）。
- * 这是唯一需要调的数字：进行中与已完成共用，改成 0 或负数都可以（负数更贴）。
+ *
+ * 按用户要求把 3px 去掉，现在为 0 —— 日期紧贴正文行盒底部。
+ * 这仍是唯一需要调的数字：0 为贴住，填 2/3/4 松开一点，负数会更贴。
+ * 进行中与已完成共用。
  */
-const DATE_GAP_Y = 3;
+const DATE_GAP_Y = 0;
 
 /**
  * 正文行高带来的「隐性空隙」系数（半行距）。
@@ -272,7 +274,14 @@ function ManagementTodoRow({
         onContextMenu(e);
       }}
       className={
-        "flex cursor-default flex-wrap items-center gap-1 px-2 touch-none sm:px-3 " +
+        /*
+          用 gap-x-1 而不是 gap-1：
+          这个容器是 flex-wrap，日期行靠 w-full 换到第二行，
+          而 gap-1 会**连行与行之间也加 4px 行间距**（row-gap），
+          那 4px 是隐形的第三方来源，导致内容与日期的间距怎么调都偏大。
+          换成 gap-x-1 只保留列间距，行间距归零，间距完全交给 marginTop 控制。
+        */
+        "flex cursor-default flex-wrap items-center gap-x-1 px-2 touch-none sm:px-3 " +
         (sortable.isDragging ? "opacity-0" : "") +
         (!selected ? " hover:bg-[var(--ln-theme-surface-hover)]" : "")
       }
