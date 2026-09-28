@@ -21,6 +21,15 @@ interface HeaderBarProps {
 const iconBtn =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded-lg transition hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-100/50";
 const iconStyle = { color: "var(--ln-theme-text)" } as React.CSSProperties;
+/**
+ * 穿透已开启时的高亮样式。
+ * 之前按钮在开 / 关两种状态下外观完全一样，用户点了之后无法确认是否生效；
+ * 专注模式下穿透不真穿透（只是锁定窗口），更需要这个可视反馈。
+ */
+const iconOnStyle = {
+  color: "#fbbf24",
+  background: "rgba(251, 191, 36, 0.18)",
+} as React.CSSProperties;
 
 export function HeaderBar({
   locale,
@@ -67,7 +76,7 @@ export function HeaderBar({
         <button
           type="button"
           className={iconBtn}
-          style={iconStyle}
+          style={mousePassthrough ? iconOnStyle : iconStyle}
           title={mk(mousePassthrough ? "mousePassthroughOn" : "mousePassthrough")}
           aria-label={mk("mousePassthrough")}
           aria-pressed={mousePassthrough}

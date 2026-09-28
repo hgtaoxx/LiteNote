@@ -75,7 +75,22 @@ export function useFocusWindowSize(
 
     const run = async () => {
       const wasFocus = prevFocusMode.current; // 首次运行为 null
-      prevFocusMode.current = focusMode;
+
+      /**
+       * 把「形态」记为已施加。
+       *
+       * ⚠️ 必须放在流程**末尾**、且只在**没被打断**时调用：
+       * effect 依赖 [focusMode, settingsReady, sizeLocked]，而「切到专注」会让
+       * focusMode 和 sizeLocked **同时变化**，于是 effect 会立刻重跑一轮并把上一轮
+       * 标记为 cancelled。如果像以前那样在 run() 开头就写 prevFocusMode，
+       * 新一轮就会误判 entering = false —— 于是「记录完整模式尺寸 + 变成正方形」
+       * 被整段跳过，还会走 lockCurrentWindowSize() 把窗口锁死在完整模式的矩形上。
+       * 表现为：专注 + 穿透 的正方形与尺寸锁定时灵时不灵。
+       */
+      const commit = () => {
+        if (cancelled) return;
+        prevFocusMode.current = focusMode;
+      };
 
       if (focusMode) {
         const entering = wasFocus !== true;
@@ -93,6 +108,7 @@ export function useFocusWindowSize(
             focusWidthRef.current = current.width;
             await saveSetting("fullWindowWidth", current.width);
             await saveSetting("fullWindowHeight", current.height);
+            if (cancelled) return;
             useSettingsStore.setState({
               fullWindowWidth: current.width,
               fullWindowHeight: current.height,
@@ -105,6 +121,7 @@ export function useFocusWindowSize(
             width: focusWidthRef.current,
             height: computeFocusWindowHeight(focusWidthRef.current),
           });
+          if (cancelled) return;
         }
 
         // 专注 + 穿透 → 锁死尺寸；专注无穿透 → 解锁、自由缩放
@@ -125,6 +142,7 @@ export function useFocusWindowSize(
           await unlockWindowSize();
           await setWindowResizable(true);
         }
+        commit();
         return;
       }
 
@@ -133,6 +151,7 @@ export function useFocusWindowSize(
         await unlockWindowSize();
         await setWindowResizable(true);
         await setWindowLogicalSize(fullSizeRef.current);
+        commit();
         return;
       }
 
@@ -150,6 +169,7 @@ export function useFocusWindowSize(
           await setWindowLogicalSize(full);
         }
       }
+      commit();
     };
 
     void run();
