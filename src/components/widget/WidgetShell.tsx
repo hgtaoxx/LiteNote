@@ -363,7 +363,10 @@ export function WidgetShell() {
             */
           >
             {/* 拖拽条始终占位（高度不变、切换时文字不跳），受限形态下仅禁用拖动 */}
-            <FocusDragHandle draggable={windowMode.movable} />
+            <FocusDragHandle
+              draggable={windowMode.movable}
+              locked={windowMode.sizeLocked}
+            />
             <TodoList
               focusMode
               locale={locale}

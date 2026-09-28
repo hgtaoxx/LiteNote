@@ -14,10 +14,19 @@ interface FocusDragHandleProps {
    * 高度由 h-4 固定，因此切换穿透时文字不会上下跳动。
    */
   draggable?: boolean;
+  /**
+   * 是否处于「界面锁定」（专注 + 穿透）。
+   * 锁定的小圆条会变成琥珀色——纯粹是为了让「锁定到底生效没有」一眼可见，
+   * 因为这个状态从外观上很难判断（窗口不能拖、不能拉，但看不出来）。
+   */
+  locked?: boolean;
 }
 
 /** 专注模式顶部拖拽条：始终占位，按需决定能否拖动 */
-export function FocusDragHandle({ draggable = true }: FocusDragHandleProps) {
+export function FocusDragHandle({
+  draggable = true,
+  locked = false,
+}: FocusDragHandleProps) {
   return (
     <div
       className={
@@ -28,8 +37,12 @@ export function FocusDragHandle({ draggable = true }: FocusDragHandleProps) {
       aria-hidden
     >
       <span
-        className="h-1 w-8 rounded-full"
-        style={{ background: "var(--ln-theme-text-muted)", opacity: 0.45 }}
+        className="h-1 w-8 rounded-full transition-colors"
+        style={{
+          // 锁定时变琥珀色（与顶栏穿透图标的高亮同色）
+          background: locked ? "#fbbf24" : "var(--ln-theme-text-muted)",
+          opacity: locked ? 0.95 : 0.45,
+        }}
       />
     </div>
   );

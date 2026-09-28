@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { saveSetting } from "@/lib/db";
 import {
   computeFocusWindowHeight,
@@ -142,6 +143,9 @@ export function useFocusWindowSize(
         } else {
           await unlockWindowSize();
         }
+        // 前端刚动过 min/max，TAO 会借机重新套用窗口样式、把标题栏样式加回来；
+        // 让 Rust 再收敛一次边框样式，保证「最后落地的样式」是对的。
+        void invoke("refresh_window_frame").catch(() => {});
         commit();
         return;
       }
@@ -150,6 +154,7 @@ export function useFocusWindowSize(
         // 退出专注：先解锁，再恢复完整模式尺寸；可缩放状态同样交给 Rust 恢复
         await unlockWindowSize();
         await setWindowLogicalSize(fullSizeRef.current);
+        void invoke("refresh_window_frame").catch(() => {});
         commit();
         return;
       }
