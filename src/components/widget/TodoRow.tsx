@@ -25,7 +25,16 @@ const TODO_TEXT_STYLE: React.CSSProperties = {
   fontFamily: "var(--ln-content-font-family, inherit)",
 };
 // 行距：原来 py-1.5（上下各 6px）行与行之间显得很空，收成 py-0.5（上下各 2px）
+// 专注模式（FocusTodoRow）用这一套
 const TODO_ROW_PAD_Y = "py-0.5";
+
+/**
+ * 完整模式正文块的竖向内边距。
+ * **下内边距刻意留 0**：下方日期行的 marginTop 已经负责了间距，
+ * 正文这边再留一份就会两个变量叠加、怎么调都调不准。
+ * 于是「正文 → 日期」的可见距离只由 DATE_GAP_Y 一个数字决定。
+ */
+const DATE_BLOCK_PAD = "pt-0.5 pb-0";
 
 /**
  * 创建 / 完成日期的字号。
@@ -43,13 +52,14 @@ const DATE_GAP_Y = 6;
  * 正文行高带来的「隐性空隙」系数（半行距）。
  *
  * 正文用 line-height: 1.6 排版（多行可读性需要），字号 F 时行盒高 1.6F，
- * 而字形本身只占约 1.16F —— 多出来的部分平均分到上下，每侧约 (1.6-1.16)/2 ≈ 0.22F。
+ * 而中文（楷体等）字形的 em 盒约占 1.0F —— 多出来的部分平均分到上下，
+ * 每侧约 (1.6 − 1.0) / 2 = 0.3F。14px 时就是 4.2px。
  *
  * 关键：这部分属于**行盒内部**，不是 margin/padding，
  * 所以只调间距是压不下去的（这正是「改了间距却没效果」的原因）。
  * 只能反过来用**负 margin** 把它吃掉。
  */
-const CONTENT_HALF_LEADING = 0.22;
+const CONTENT_HALF_LEADING = 0.3;
 
 interface TodoRowProps {
   todo: TodoItem;
@@ -343,12 +353,12 @@ function ManagementTodoRow({
           }
         }}
       >
-        {/* 编辑态文本框与显示态完全对齐：rows=1 + py-0.5，与显示态同一套行距 */}
+        {/* 编辑态文本框与显示态完全对齐：rows=1 + 同一套竖向内边距（pt-0.5 pb-0） */}
         {editing ? (
           <textarea
             ref={textareaRef}
             data-tauri-no-drag
-            className="w-0 flex-1 resize-none bg-transparent py-0.5 outline-none ring-0"
+            className="w-0 flex-1 resize-none bg-transparent pt-0.5 pb-0 outline-none ring-0"
             style={{ color: "var(--ln-theme-text)", ...TODO_TEXT_STYLE }}
             rows={1}
             value={todo.text}
@@ -370,7 +380,7 @@ function ManagementTodoRow({
             }}
           />
         ) : (
-          <div className={`flex min-w-0 flex-1 flex-col ${TODO_ROW_PAD_Y}`}>
+          <div className={`flex min-w-0 flex-1 flex-col ${DATE_BLOCK_PAD}`}>
             <span
               className={
                 "whitespace-pre-wrap break-words" +
@@ -421,17 +431,21 @@ function ManagementTodoRow({
           }
           style={{
             fontSize: DATE_FONT_SIZE,
-            lineHeight: 1.3,
+            // 行高 1：日期自身不再产生额外半行距，间距完全由 DATE_GAP_Y 决定
+            lineHeight: 1,
             /*
-              让「正文 → 日期」的**可见**间距正好等于 DATE_GAP_Y：
+              让「正文 → 日期」的**可见**间距正好等于 DATE_GAP_Y。
 
-                可见间距 = 正文下内边距(2px) + 半行距(0.22 × 正文字号) + 这里的外边距
+              正文行盒 = 1.6 × 正文字号，字形只占约 (1 − 2×CONTENT_HALF_LEADING)，
+              所以字形下方天然多出 CONTENT_HALF_LEADING × 正文字号 的空白；
+              正文块的下内边距已刻意设为 0，于是：
 
-              所以 外边距 = DATE_GAP_Y − 2px − 0.22em。
-              字号取 CSS 变量 --ln-content-font-size（用户可调 12~17px），
-              所以用 calc 算；结果通常是很小的正数，字号大时会略微为负，都正常。
+                可见间距 = 半行距 + 这个 marginTop
+
+              反推 marginTop = DATE_GAP_Y − 半行距。
+              DATE_GAP_Y 可以填 0 甚至负数（负得越多，日期越往内容贴）。
             */
-            marginTop: `calc(${DATE_GAP_Y}px - 2px - ${CONTENT_HALF_LEADING} * var(--ln-content-font-size, 14px))`,
+            marginTop: `calc(${DATE_GAP_Y}px - ${CONTENT_HALF_LEADING} * var(--ln-content-font-size, 14px))`,
             padding: "0 1em",
           }}
         >
