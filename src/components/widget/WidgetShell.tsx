@@ -371,6 +371,13 @@ export function WidgetShell() {
               /* 专注受限形态（专注 + 穿透）：内容不可选中 */
               (windowMode.noSelect ? " select-none" : "")
             }
+            /*
+              右键菜单挂在**整个专注内容区**上，而不是只挂在 16px 高的拖拽条上：
+              专注模式下窗口可缩放，窗口顶部约 4~8px 是系统缩放边框，
+              右键落在那里会被 Windows 抢去弹系统菜单（还原/移动/大小…），
+              只挂拖拽条的话很容易点空。挂在这里，往下点也能正常出菜单。
+            */
+            onContextMenu={openAppMenu}
           >
             {/* 拖拽条始终占位（高度不变、切换时文字不跳），受限形态下仅禁用拖动 */}
             <FocusDragHandle

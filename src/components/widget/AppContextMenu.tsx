@@ -57,8 +57,12 @@ export function AppContextMenu({
   }, [onClose]);
 
   const item =
-    "flex w-full items-center px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--ln-theme-surface-hover)]";
-  const itemStyle: React.CSSProperties = { color: "var(--ln-theme-text)" };
+    "flex w-full items-center px-2.5 py-1 text-left transition-colors hover:bg-[var(--ln-theme-surface-hover)]";
+  const itemStyle: React.CSSProperties = {
+    color: "var(--ln-theme-text)",
+    // 12.5px：与「常规」页下拉菜单同一量级，整体比之前更紧凑
+    fontSize: 12.5,
+  };
 
   /** 执行动作并关闭菜单 */
   const run = (fn: () => void) => () => {
@@ -70,11 +74,11 @@ export function AppContextMenu({
     <div
       ref={ref}
       role="menu"
-      className="fixed z-[150] min-w-[9rem] overflow-hidden rounded-lg py-1 shadow-xl"
+      className="fixed z-[150] min-w-[8rem] overflow-hidden rounded-lg py-1 shadow-xl"
       style={{
         // 贴边时向左 / 向上收，避免超出窗口
-        left: Math.min(x, Math.max(0, window.innerWidth - 156)),
-        top: Math.min(y, Math.max(0, window.innerHeight - 116)),
+        left: Math.min(x, Math.max(0, window.innerWidth - 140)),
+        top: Math.min(y, Math.max(0, window.innerHeight - 100)),
         background: "var(--ln-theme-bg)",
         backdropFilter: "var(--ln-theme-backdrop)",
         border: "1px solid var(--ln-theme-border)",
