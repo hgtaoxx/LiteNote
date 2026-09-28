@@ -83,19 +83,32 @@ export function HeaderBar({
           onClick={onEnableMousePassthrough}
         >
           <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
-            {/* 光标箭头 + 斜杠：鼠标事件穿过窗口 */}
-            <path
-              d="M6 3.5v13l3.3-3.3 2.3 5.2 2.4-1.1-2.3-5.1H17L6 3.5Z"
+            {/* 鼠标本体：未开启穿透时只有它 */}
+            <rect
+              x="6.5"
+              y="3"
+              width="11"
+              height="18"
+              rx="5.5"
               stroke="currentColor"
               strokeWidth="1.5"
-              strokeLinejoin="round"
             />
+            {/* 左右键分界线 */}
             <path
-              d="M3.5 20.5 20.5 3.5"
+              d="M12 3v5.5"
               stroke="currentColor"
               strokeWidth="1.5"
               strokeLinecap="round"
             />
+            {/* 开启穿透后才加一道斜杠：鼠标事件穿过窗口 */}
+            {mousePassthrough ? (
+              <path
+                d="M3.5 20.5 20.5 3.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            ) : null}
           </svg>
         </button>
         <button
