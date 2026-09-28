@@ -14,41 +14,17 @@ interface FocusDragHandleProps {
    * 高度由 h-4 固定，因此切换穿透时文字不会上下跳动。
    */
   draggable?: boolean;
-  /** 右键：弹出精简菜单（隐藏界面 / 完整模式 / 退出） */
-  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 /** 专注模式顶部拖拽条：始终占位，按需决定能否拖动 */
-export function FocusDragHandle({
-  draggable = true,
-  onContextMenu,
-}: FocusDragHandleProps) {
+export function FocusDragHandle({ draggable = true }: FocusDragHandleProps) {
   return (
     <div
-      /*
-        高度 24px（原 16px）：窗口顶部约 4~8px 属于系统缩放边框（非客户区），
-        Windows 会把那里的右键直接抢去弹系统菜单、DOM 收不到事件。
-        加高之后下半部分稳定落在客户区，右键才能被我们接管。
-      */
       className={
-        "flex h-6 shrink-0 items-center justify-center " +
+        "flex h-4 shrink-0 items-center justify-center " +
         (draggable ? "cursor-grab active:cursor-grabbing" : "cursor-default")
       }
       data-tauri-drag-region={draggable ? "deep" : "false"}
-      onContextMenu={(e) => {
-        /*
-          左右分区（按用户设计）：
-            · 左半区 → 不拦截，交给系统 → 弹出 Windows 系统菜单（还原/移动/大小…）
-            · 右半区 → 拦下并 preventDefault → 弹出应用自己的菜单
-          注意：紧贴窗口最顶的那几像素属于非客户区（缩放边框），
-          Windows 会直接抢走右键，DOM 收不到事件，属于平台限制。
-        */
-        const rect = e.currentTarget.getBoundingClientRect();
-        const onRightHalf = e.clientX - rect.left > rect.width / 2;
-        if (!onRightHalf) return;
-        e.preventDefault();
-        onContextMenu?.(e);
-      }}
       aria-hidden
     >
       <span

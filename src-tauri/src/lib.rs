@@ -495,9 +495,24 @@ fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 /// 放在 Rust 侧统一施加：托盘、快捷键、启动恢复都经过这里，
 /// 且不依赖前端的 window 插件权限。
 fn apply_effective_passthrough<R: Runtime>(app: &AppHandle<R>) {
-    let enabled = read_mouse_passthrough(app) && !read_focus_mode(app);
+    let passthrough = read_mouse_passthrough(app);
+    let focus = read_focus_mode(app);
+    let real_passthrough = passthrough && !focus;
+    let locked = passthrough && focus;
+
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_ignore_cursor_events(enabled);
+        let _ = w.set_ignore_cursor_events(real_passthrough);
+
+        /*
+          「专注 + 穿透」= 界面锁定：在 Rust 侧也把「禁止缩放」落实一遍。
+          原来只靠前端调 setResizable，一旦前端状态没同步、或 window 插件权限异常，
+          就会静默失效（表现为"开了锁定还是能拉"）。
+
+          这里只动 resizable，**不动 min/max**：专注模式的正方形尺寸是前端算好再
+          调 setSize 设的，若在这里抢先锁死 min=max，前端的 setSize 会被夹住，
+          正方形就永远设不进去。
+        */
+        let _ = w.set_resizable(!locked);
     }
 }
 

@@ -33,7 +33,6 @@ import { HeaderBar } from "./HeaderBar";
 import { RecurrencePicker } from "./RecurrencePicker";
 import { SettingsModal } from "./SettingsModal";
 import { TodoContextMenu } from "./TodoContextMenu";
-import { AppContextMenu } from "./AppContextMenu";
 import { TodoList } from "./TodoList";
 import { WeekCalendar } from "./WeekCalendar";
 import { FocusDragHandle } from "./FocusDragHandle";
@@ -124,13 +123,6 @@ export function WidgetShell() {
   const locale = useMemo(() => resolveLocale(localeMode), [localeMode]);
 
   const noop = useCallback(() => {}, []);
-
-  /** 右键标题栏 / 专注模式拖拽条弹出的精简菜单位置（null = 未打开） */
-  const [appMenu, setAppMenu] = useState<{ x: number; y: number } | null>(null);
-  const closeAppMenu = useCallback(() => setAppMenu(null), []);
-  const openAppMenu = useCallback((e: React.MouseEvent) => {
-    setAppMenu({ x: e.clientX, y: e.clientY });
-  }, []);
 
   // 注意：这里**不要**加全局的 contextmenu 拦截。
   // 曾经加过一层 document 级 preventDefault 想顺便压掉无边框窗口的系统菜单，
@@ -371,10 +363,7 @@ export function WidgetShell() {
             */
           >
             {/* 拖拽条始终占位（高度不变、切换时文字不跳），受限形态下仅禁用拖动 */}
-            <FocusDragHandle
-              draggable={windowMode.movable}
-              onContextMenu={openAppMenu}
-            />
+            <FocusDragHandle draggable={windowMode.movable} />
             <TodoList
               focusMode
               locale={locale}
@@ -541,20 +530,6 @@ export function WidgetShell() {
         </div>
         </div>
       )}
-
-      {/* 标题栏 / 专注拖拽条的右键精简菜单（两种模式下都提供） */}
-      {appMenu ? (
-        <AppContextMenu
-          locale={locale}
-          x={appMenu.x}
-          y={appMenu.y}
-          locked={mousePassthrough}
-          onHide={handleHide}
-          onSwitchToFull={() => setFocusMode(false)}
-          onToggleLock={() => setMousePassthrough(!mousePassthrough)}
-          onClose={closeAppMenu}
-        />
-      ) : null}
 
       {!focusMode && menu && menuTodo ? (
         <TodoContextMenu
