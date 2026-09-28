@@ -34,6 +34,13 @@ const TODO_ROW_PAD_Y = "py-0.5";
  */
 const DATE_FONT_SIZE = 9;
 
+/**
+ * 日期与正文之间的距离（用户暂定 6px）。
+ * 正文块自身带 2px 下内边距（TODO_ROW_PAD_Y 的 pb-0.5），
+ * 所以日期行只需再补 4px，两者相加正好 6px。
+ */
+const DATE_GAP_Y = 6;
+
 interface TodoRowProps {
   todo: TodoItem;
   locale: Locale;
@@ -389,33 +396,37 @@ function ManagementTodoRow({
       </button>
 
       {/*
-        日期行：**进行中与已完成共用同一套版式**（用户明确要求两者显示格式一致）。
-
+        日期行：
           · 独占一整行：父级 flex-wrap + 这里的 w-full，横跨整行宽度
-          · 创建日期在左，与「重要程度」圆点同一条左边界
-          · 完成日期在右（仅已完成有）
-          · 左右各内缩 1 个字符（1em 跟着字号走，所以字号改了内缩同步变）
-          · 紧跟在正文下方：正文的上边距不变，下方留出更宽一点的空档，
-            日期几乎贴着行底（行自身的 pb 只留 2px）
+          · 进行中：只有创建日期，按用户要求放**右下角**（justify-end）
+          · 已完成：创建日期在左、完成日期在右（justify-between）
+          · 左右各内缩 1 个字符（1em 跟着字号走，改字号内缩同步变）
+          · 与正文之间固定 DATE_GAP_Y（暂定 6px），日期贴着行底
       */}
       {todo.completed || todo.createTime > 0 ? (
         <div
-          className="flex w-full items-center justify-between"
+          className={
+            "flex w-full items-center " +
+            (todo.completed ? "justify-between" : "justify-end")
+          }
           style={{
             fontSize: DATE_FONT_SIZE,
             lineHeight: 1.3,
-            marginTop: 3,
+            marginTop: DATE_GAP_Y - 2,
             padding: "0 1em",
           }}
         >
-          <span style={{ color: "var(--ln-theme-text-muted)" }}>
-            {formatStamp(todo.createTime, locale)}
-          </span>
+          {/* 已完成才有左侧的创建日期；进行中只显示一个日期，落在右下角 */}
           {todo.completed ? (
             <span style={{ color: "var(--ln-theme-text-muted)" }}>
-              {formatStamp(todo.completedTime, locale)}
+              {formatStamp(todo.createTime, locale)}
             </span>
           ) : null}
+          <span style={{ color: "var(--ln-theme-text-muted)" }}>
+            {todo.completed
+              ? formatStamp(todo.completedTime, locale)
+              : formatStamp(todo.createTime, locale)}
+          </span>
         </div>
       ) : null}
     </div>
