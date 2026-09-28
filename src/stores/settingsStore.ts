@@ -28,6 +28,8 @@ export interface SettingsState {
   localeMode: LocaleMode;
   alwaysOnTop: boolean;
   autoStart: boolean;
+  /** WebDAV 同步开关（用于内容变化后的自动同步判断；实际同步在 Rust 侧执行） */
+  webdavEnabled: boolean;
   theme: ThemeId;
   reminderMode: "popup" | "system";
   focusMode: boolean;

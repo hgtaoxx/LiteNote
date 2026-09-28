@@ -61,6 +61,16 @@ export async function webdavRestore(cfg: {
   return await invoke<string>("webdav_restore", { payload: cfg });
 }
 
+/**
+ * 内容变化后的自动同步：不传临时配置，直接用已保存的配置。
+ *
+ * Rust 侧会先比对内容指纹，内容没变就直接返回、不发任何网络请求，
+ * 所以调用方不必自己判断"值不值得同步"，多调用几次也没有网络开销。
+ */
+export async function webdavAutoSync(): Promise<void> {
+  await invoke("webdav_sync_now", { payload: null });
+}
+
 /** 读取同步状态。 */
 export async function webdavStatus(): Promise<WebdavStatus> {
   return await invoke<WebdavStatus>("webdav_status");

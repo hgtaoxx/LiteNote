@@ -257,6 +257,19 @@ fn read_local_todos<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<TodoItemSync>,
     Ok(todos)
 }
 
+/// 待办内容指纹。
+///
+/// 只哈希待办数组本身：**不能**把 `updated_at` 一起算进去，否则每次调用都不同，
+/// 判断就永远失效了。
+fn fingerprint(todos: &[TodoItemSync]) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let json = serde_json::to_string(todos).unwrap_or_default();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    json.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
 /// 用远端数据覆盖本地（手动恢复）
 fn overwrite_local_todos<R: Runtime>(app: &AppHandle<R>, sync: &SyncFile) -> Result<(), String> {
     let db_path = litenote_db_path(app).ok_or_else(|| "无法获取数据库路径".to_string())?;
@@ -364,7 +377,11 @@ fn merge_todos(local: Vec<TodoItemSync>, remote: Vec<TodoItemSync>) -> Vec<TodoI
 /// 双向同步：合并本地与远端，结果同时写回本地并上传云端。
 /// - 远端文件不存在（404）时，直接把本地上传。
 /// - 已存在时，逐条按 update_time 合并，避免多设备互相覆盖丢数据。
-fn sync_to_webdav<R: Runtime>(app: &AppHandle<R>, ov: Option<&ConfigOverride>) -> Result<(), String> {
+fn sync_to_webdav<R: Runtime>(
+    app: &AppHandle<R>,
+    ov: Option<&ConfigOverride>,
+    force: bool,
+) -> Result<(), String> {
     let (url, user, pass, remote_path, _enabled) = get_config(app, ov)?;
 
     let client = build_client()?;
@@ -372,6 +389,20 @@ fn sync_to_webdav<R: Runtime>(app: &AppHandle<R>, ov: Option<&ConfigOverride>) -
     let full = normalize_remote_url(&url, &remote_path);
 
     let local = read_local_todos(app)?;
+
+    /*
+      内容变了才同步。
+
+      以前是后台每 5 分钟无条件走一遍「拉取 → 合并 → 写回 → 上传」，
+      内容没动也照发请求。现在先比内容指纹：与上次同步时一致就直接返回，
+      一个网络请求都不发。
+
+      手动「立即同步」传 force=true 跳过判断——多设备场景下即使本地没改，
+      也要能主动把别的设备改动拉下来。
+    */
+    if !force && read_setting_string_app(app, "webdavLastHash", "") == fingerprint(&local) {
+        return Ok(());
+    }
 
     // 尝试拉取远端
     let remote_todos = match client
@@ -415,6 +446,9 @@ fn sync_to_webdav<R: Runtime>(app: &AppHandle<R>, ov: Option<&ConfigOverride>) -
         todos: merged.clone(),
     })?;
 
+    // 上传前先记下合并结果的指纹（merged 下面会被移进 SyncFile）
+    let merged_fp = fingerprint(&merged);
+
     // 上传合并结果到云端
     ensure_remote_dir(&client, &url, &auth, &remote_path)?;
     let body = serde_json::to_string(&SyncFile {
@@ -439,6 +473,8 @@ fn sync_to_webdav<R: Runtime>(app: &AppHandle<R>, ov: Option<&ConfigOverride>) -
     }
     eprintln!("[webdav] sync: 成功");
 
+    // 记下本次同步后的内容指纹，供下次判断「内容有没有变」
+    let _ = write_setting_string(app, "webdavLastHash", &merged_fp);
     set_last_sync(app, now_ms())?;
     Ok(())
 }
@@ -465,6 +501,8 @@ fn download_from_webdav<R: Runtime>(app: &AppHandle<R>, ov: Option<&ConfigOverri
     let sync_file: SyncFile = serde_json::from_str(&body).map_err(|e| format!("解析远端数据失败: {e}"))?;
 
     overwrite_local_todos(app, &sync_file)?;
+    // 恢复后的内容即远端内容，直接记为已同步状态，避免紧接着又被自动同步上传一遍
+    let _ = write_setting_string(app, "webdavLastHash", &fingerprint(&sync_file.todos));
     set_last_sync(app, now_ms())?;
     Ok(())
 }
@@ -479,12 +517,14 @@ fn set_last_sync<R: Runtime>(app: &AppHandle<R>, ts: i64) -> Result<(), String> 
     Ok(())
 }
 
-/// 后台定时双向同步（仅 enabled 时执行）
+/// 后台定时检查（仅 enabled 时执行）。
+/// force=false：内容指纹没变就直接返回，不发任何网络请求；
+/// 因此它的作用已从「定期同步」变成「兜底检查内容是否变化」。
 fn sync_tick<R: Runtime>(app: &AppHandle<R>) {
     if !read_setting_bool_app(app, "webdavEnabled", false) {
         return;
     }
-    if let Err(e) = sync_to_webdav(app, None) {
+    if let Err(e) = sync_to_webdav(app, None, false) {
         eprintln!("[LiteNote] WebDAV 后台同步失败: {e}");
     }
     // set_last_sync 由 sync_to_webdav 内部在成功时调用
@@ -652,7 +692,8 @@ pub async fn webdav_sync_now(app: AppHandle, payload: Option<WebdavTestPayload>)
         pass: Some(p.pass),
         remote_path: p.remote_path,
     });
-    tauri::async_runtime::spawn_blocking(move || match sync_to_webdav(&app, ov.as_ref()) {
+    // force=true：手动「立即同步」总是走完整流程（可主动拉取其它设备的改动）
+    tauri::async_runtime::spawn_blocking(move || match sync_to_webdav(&app, ov.as_ref(), true) {
         Ok(_) => Ok("同步成功".into()),
         Err(e) => Err(e),
     })

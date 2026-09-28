@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -20,6 +20,7 @@ import { useWidgetActions } from "@/hooks/useWidgetActions";
 import { useFocusWindowSize } from "@/hooks/useFocusWindowSize";
 import { resolveWindowMode } from "@/lib/windowMode";
 import { resolveContentFontStack } from "@/lib/contentFonts";
+import { webdavAutoSync } from "@/lib/webdav";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTodoStore } from "@/stores/todoStore";
 import type { TodoColorId } from "@/types/todo";
@@ -76,6 +77,7 @@ export function WidgetShell() {
   const setReminderMode = useSettingsStore((s) => s.setReminderMode);
   const focusMode = useSettingsStore((s) => s.focusMode);
   const settingsInitialized = useSettingsStore((s) => s.initialized);
+  const webdavEnabled = useSettingsStore((s) => s.webdavEnabled);
   const lastSettingsError = useSettingsStore((s) => s.lastError);
   const clearSettingsError = useSettingsStore((s) => s.clearError);
   const lastTodoError = useTodoStore((s) => s.lastError);
@@ -223,6 +225,29 @@ export function WidgetShell() {
       }
     })();
   }, [settingsInitialized, windowMode.realPassthrough]);
+
+  /**
+   * WebDAV 自动同步：**内容变化后才触发**，不再定期无脑上传。
+   *
+   * 这里只负责"内容变化后稍等一下触发一次"，真正要不要走网络由 Rust 侧的内容
+   * 指纹决定：指纹与上次同步一致就直接返回，一个请求都不发。因此这里的防抖
+   * 即使多触发几次也没有任何网络开销。
+   */
+  const didSkipFirstAutoSync = useRef(false);
+  useEffect(() => {
+    if (!settingsInitialized || !webdavEnabled) return;
+    // 启动时加载数据那一次不算「内容变化」
+    if (!didSkipFirstAutoSync.current) {
+      didSkipFirstAutoSync.current = true;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void webdavAutoSync().catch((e) =>
+        console.warn("[LiteNote] WebDAV 自动同步失败:", e),
+      );
+    }, 2500);
+    return () => window.clearTimeout(timer);
+  }, [todos, webdavEnabled, settingsInitialized]);
 
   // 进入专注模式时关闭编辑态、右键菜单与模态框。
   // 专注模式不渲染这些 UI，不清掉的话切回完整模式会「突然又弹出来」。
