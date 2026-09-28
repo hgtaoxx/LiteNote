@@ -325,7 +325,14 @@ function AboutTab({ locale }: { locale: Locale }) {
         className="rounded-md px-2.5 py-1.5 text-sm font-medium"
         style={{
           color: "var(--ln-theme-text)",
-          background: "var(--ln-theme-surface)",
+          // 只包住文字，并给一个固定下限 →「关于」与「快捷键」两个小标签一样长
+          display: "inline-block",
+          minWidth: "4.5rem",
+          /*
+            深浅与上方标签栏区分：标签栏整条用的是 --ln-theme-surface，
+            这里换深一档的 surface-active（六个主题下都稳定地更深/更实一档）。
+          */
+          background: "var(--ln-theme-surface-active)",
           boxShadow: "0 1px 2px rgba(0,0,0,0.07), 0 2px 6px rgba(0,0,0,0.06)",
         }}
       >
@@ -346,7 +353,14 @@ function AboutTab({ locale }: { locale: Locale }) {
         className="rounded-md px-2.5 py-1.5 text-sm font-medium"
         style={{
           color: "var(--ln-theme-text)",
-          background: "var(--ln-theme-surface)",
+          // 只包住文字，并给一个固定下限 →「关于」与「快捷键」两个小标签一样长
+          display: "inline-block",
+          minWidth: "4.5rem",
+          /*
+            深浅与上方标签栏区分：标签栏整条用的是 --ln-theme-surface，
+            这里换深一档的 surface-active（六个主题下都稳定地更深/更实一档）。
+          */
+          background: "var(--ln-theme-surface-active)",
           boxShadow: "0 1px 2px rgba(0,0,0,0.07), 0 2px 6px rgba(0,0,0,0.06)",
         }}
       >
