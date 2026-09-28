@@ -24,7 +24,8 @@ const TODO_TEXT_STYLE: React.CSSProperties = {
   lineHeight: 1.6,
   fontFamily: "var(--ln-content-font-family, inherit)",
 };
-const TODO_ROW_PAD_Y = "py-1.5";
+// 行距：原来 py-1.5（上下各 6px）行与行之间显得很空，收成 py-0.5（上下各 2px）
+const TODO_ROW_PAD_Y = "py-0.5";
 
 interface TodoRowProps {
   todo: TodoItem;
@@ -128,6 +129,25 @@ function FocusTodoRow({
   );
 }
 
+/**
+ * 时间戳 →「9月28日」。
+ *
+ * 刻意不做「今天 / 明天」这种相对化：创建与完成日期是已经发生的事实，
+ * 用绝对日期表述更清楚；跨年时补上年份避免歧义。
+ */
+function formatStamp(ts: number, locale: Locale): string {
+  if (!ts || ts <= 0) return "";
+  const d = new Date(ts);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const m = d.getMonth() + 1;
+  const day = d.getDate();
+
+  if (locale === "en") {
+    return sameYear ? `${m}/${day}` : `${m}/${day}/${d.getFullYear()}`;
+  }
+  return sameYear ? `${m}月${day}日` : `${d.getFullYear()}年${m}月${day}日`;
+}
+
 function ManagementTodoRow({
   todo,
   locale,
@@ -216,7 +236,7 @@ function ManagementTodoRow({
         onContextMenu(e);
       }}
       className={
-        "flex cursor-default items-center gap-1 px-2 touch-none sm:px-3 " +
+        "flex cursor-default flex-wrap items-center gap-1 px-2 touch-none sm:px-3 " +
         (sortable.isDragging ? "opacity-0" : "") +
         (!selected ? " hover:bg-[var(--ln-theme-surface-hover)]" : "")
       }
@@ -299,12 +319,12 @@ function ManagementTodoRow({
           }
         }}
       >
-        {/* 编辑态文本框与显示态完全对齐：rows=1 + py-1.5 → 单行也是 33px，多行由下方 effect 自动增高 */}
+        {/* 编辑态文本框与显示态完全对齐：rows=1 + py-0.5，与显示态同一套行距 */}
         {editing ? (
           <textarea
             ref={textareaRef}
             data-tauri-no-drag
-            className="w-0 flex-1 resize-none bg-transparent py-1.5 outline-none ring-0"
+            className="w-0 flex-1 resize-none bg-transparent py-0.5 outline-none ring-0"
             style={{ color: "var(--ln-theme-text)", ...TODO_TEXT_STYLE }}
             rows={1}
             value={todo.text}
@@ -360,6 +380,39 @@ function ManagementTodoRow({
           </div>
         )}
       </button>
+
+      {/*
+        未完成：行右侧显示创建日期。右边缘与上方星期（时钟区右列）同一条边界。
+        字号六号（≈10px），暂定，后续要调就改这个数字。
+      */}
+      {!todo.completed && todo.createTime > 0 ? (
+        <span
+          className="shrink-0"
+          style={{ fontSize: 10, color: "var(--ln-theme-text-muted)" }}
+        >
+          {formatStamp(todo.createTime, locale)}
+        </span>
+      ) : null}
+
+      {/*
+        已完成：内容下方两角——
+          左下角 = 创建日期，与上方「重要程度」圆点同一条左边界；
+          右下角 = 完成日期，与上方星期同一条右边界。
+        这里的 w-full 配合父级 flex-wrap，让它独占一整行、横跨整行宽度。
+      */}
+      {todo.completed ? (
+        <div
+          className="flex w-full items-center justify-between"
+          style={{ fontSize: 10, lineHeight: 1.4 }}
+        >
+          <span style={{ color: "var(--ln-theme-text-muted)" }}>
+            {formatStamp(todo.createTime, locale)}
+          </span>
+          <span style={{ color: "var(--ln-theme-text-muted)" }}>
+            {formatStamp(todo.completedTime, locale)}
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
