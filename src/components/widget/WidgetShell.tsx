@@ -139,17 +139,11 @@ export function WidgetShell() {
     );
   }, []);
 
-  /**
-   * 无边框窗口在标题区域右键会弹出 **Windows 系统菜单**
-   * （还原 / 移动 / 大小 / 最小化 / 最大化 / 关闭），与界面语义完全对不上。
-   * 各处的 onContextMenu 已经 preventDefault，这里再兜一层，
-   * 阻止 webview 的默认右键行为，确保只显示我们自己的菜单。
-   */
-  useEffect(() => {
-    const onCtx = (e: MouseEvent) => e.preventDefault();
-    document.addEventListener("contextmenu", onCtx);
-    return () => document.removeEventListener("contextmenu", onCtx);
-  }, []);
+  // 注意：这里**不要**加全局的 contextmenu 拦截。
+  // 曾经加过一层 document 级 preventDefault 想顺便压掉无边框窗口的系统菜单，
+  // 结果把内容区（待办列表）原本的右键行为也一并挡住了。
+  // 需要自定义菜单的地方各自在 onContextMenu 里 preventDefault 即可，
+  // 不要动全局默认行为。
   const noopContextMenu = useCallback((_e: React.MouseEvent, _id: string) => {}, []);
   const noopChangeText = useCallback((_id: string, _text: string) => {}, []);
 

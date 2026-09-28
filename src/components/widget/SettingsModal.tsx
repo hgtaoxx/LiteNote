@@ -464,8 +464,10 @@ function EditableShortcutRow({
         <button
           type="button"
           onClick={() => { setCapturing(true); setError(false); }}
-          className="shrink-0 rounded px-2 py-0.5 text-[11px] font-mono transition min-w-[72px] text-center"
+          className="shrink-0 rounded px-2 py-0.5 font-mono transition min-w-[72px] text-center"
           style={{
+            // 与「常规」页下拉菜单同一个字号常量，避免两处脱节
+            fontSize: SELECT_FONT_SIZE,
             color: error
               ? "#f87171"
               : capturing

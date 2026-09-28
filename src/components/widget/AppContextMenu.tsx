@@ -57,7 +57,7 @@ export function AppContextMenu({
   }, [onClose]);
 
   const item =
-    "flex w-full items-center px-3 py-1.5 text-left text-[13px] transition-colors hover:bg-[var(--ln-theme-surface-hover)]";
+    "flex w-full items-center px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--ln-theme-surface-hover)]";
   const itemStyle: React.CSSProperties = { color: "var(--ln-theme-text)" };
 
   /** 执行动作并关闭菜单 */
