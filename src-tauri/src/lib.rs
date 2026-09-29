@@ -501,6 +501,63 @@ fn apply_effective_passthrough<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// 关掉 WebView2 自带的右键菜单。
+///
+/// 为什么是"关掉"而不是"改小"：那个菜单是 Edge 内核自己的 UI，
+/// **没有任何字号 / 尺寸 / 排版接口**，改不了。能做的只有整个禁用，
+/// 然后由应用自己画菜单（尺寸、字号、间距就完全可控了）。
+///
+/// wry 里有 `with_default_context_menus(false)`，但 Tauri 没有把它暴露到
+/// 配置或 builder 上（源码里搜不到），所以这里通过 `with_webview` 拿到
+/// WebView2 控制器，直接设 `AreDefaultContextMenusEnabled = false`。
+#[cfg(windows)]
+fn disable_native_context_menu<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = window.with_webview(|webview| {
+        let controller = webview.controller();
+        // 与 wry 内部同样的调用路径（webview2/mod.rs: set_webview_settings）
+        unsafe {
+            if let Ok(core) = controller.CoreWebView2() {
+                if let Ok(settings) = core.Settings() {
+                    let _ = settings.SetAreDefaultContextMenusEnabled(false);
+                }
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+fn disable_native_context_menu<R: Runtime>(_app: &AppHandle<R>) {}
+
+/// 专注模式下的全局右键菜单（用**原生菜单**，外观与 Windows 一致）。
+///
+/// 位置取当前鼠标位置，所以"右键哪里就在哪里弹出"。
+/// 菜单项与托盘保持同一套动作，避免两处行为不一致。
+#[tauri::command]
+fn popup_focus_menu<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    use tauri::menu::{ContextMenu, Menu, MenuItem};
+
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_string())?;
+
+    let hide_i = MenuItem::with_id(&app, "ctx_hide", "隐藏界面", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let full_i = MenuItem::with_id(&app, "ctx_full", "完整模式", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let quit_i = MenuItem::with_id(&app, "ctx_quit", "退出", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+
+    let menu =
+        Menu::with_items(&app, &[&hide_i, &full_i, &quit_i]).map_err(|e| e.to_string())?;
+
+    let pos = window.cursor_position().map_err(|e| e.to_string())?;
+    menu.popup_at(&window, pos).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
     write_setting_bool(app, "focusMode", enabled)?;
     // 进入专注要临时取消穿透，退出专注要恢复穿透
@@ -1052,6 +1109,7 @@ pub fn run() {
             set_always_on_top,
             set_mouse_passthrough,
             quit_app,
+            popup_focus_menu,
             update_shortcuts,
             webdav::webdav_set_config,
             webdav::webdav_get_config,
@@ -1139,6 +1197,18 @@ pub fn run() {
                     "tray_mouse_passthrough" => {
                         let _ = toggle_mouse_passthrough(app);
                     }
+                    // 专注模式右键菜单（popup_focus_menu 弹出的那个）
+                    "ctx_hide" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                    }
+                    "ctx_full" => {
+                        let _ = apply_focus_mode(app, false);
+                    }
+                    "ctx_quit" => {
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -1164,6 +1234,10 @@ pub fn run() {
 
             // 启动 Rust 端后台提醒轮询（独立于前端，macOS 窗口隐藏时也能可靠运行）
             start_rust_reminder_poll(app.handle());
+
+            // 关掉 WebView2 自带的右键菜单：它没有样式接口改不了，
+            // 关掉之后右键完全交给应用自己的菜单处理
+            disable_native_context_menu(app.handle());
 
             // 启动 Rust 端后台 WebDAV 同步轮询（仅启用时执行单向上传）
             webdav::start_webdav_sync_poll(app.handle());
