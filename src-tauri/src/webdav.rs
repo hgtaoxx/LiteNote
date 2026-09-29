@@ -73,6 +73,7 @@ struct SyncFile {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct WebdavStatus {
     enabled: bool,
     last_sync: i64,
@@ -557,7 +558,9 @@ pub fn start_webdav_sync_poll<R: Runtime>(app: &AppHandle<R>) {
 
 // ──────────────── Tauri Commands ────────────────
 
+/// 设置 WebDAV 配置（密码加密存储）
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebdavConfigPayload {
     pub enabled: Option<bool>,
     pub url: Option<String>,
@@ -565,8 +568,6 @@ pub struct WebdavConfigPayload {
     pub pass: Option<String>,
     pub remote_path: Option<String>,
 }
-
-/// 设置 WebDAV 配置（密码加密存储）
 #[tauri::command]
 pub async fn webdav_set_config(app: AppHandle, config: WebdavConfigPayload) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -634,7 +635,12 @@ pub async fn webdav_get_config(app: AppHandle) -> Result<serde_json::Value, Stri
 }
 
 /// 测试连接请求参数（使用当前输入框的临时值，不依赖已保存配置）
+///
+/// ⚠️ 必须 `rename_all = "camelCase"`：前端 invoke 传的是 `remotePath`，
+/// 没有这行 serde 会去找 `remote_path`、恒为 None ——
+/// 表现就是「远端路径填了却存不进去、点完同步又变回默认值」。
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WebdavTestPayload {
     pub url: String,
     pub user: String,
