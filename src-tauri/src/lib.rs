@@ -531,32 +531,19 @@ fn disable_native_context_menu<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(not(windows))]
 fn disable_native_context_menu<R: Runtime>(_app: &AppHandle<R>) {}
 
-/// 专注模式下的全局右键菜单（用**原生菜单**，外观与 Windows 一致）。
-///
-/// 位置取当前鼠标位置，所以"右键哪里就在哪里弹出"。
-/// 菜单项与托盘保持同一套动作，避免两处行为不一致。
-#[tauri::command]
-fn popup_focus_menu<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    use tauri::menu::{ContextMenu, Menu, MenuItem};
+/* ────────────────────────────────────────────────────────────────
+   关于「专注模式右键菜单」为什么不在 Rust 侧弹原生菜单：
 
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "找不到主窗口".to_string())?;
+   ContextMenu::popup_at 的第一个参数要 tauri::Window<R>，而获取它的
+   Manager::get_window 被 #[cfg(feature = "unstable")] 锁着（tauri lib.rs:541），
+   get_webview_window 拿到的 WebviewWindow 又不能直接喂给 popup_at
+   （E0308: expected Window<_>, found &WebviewWindow<R>）。
+   为这一个菜单去开 unstable 特性会牵动其它 API 签名，不划算。
 
-    let hide_i = MenuItem::with_id(&app, "ctx_hide", "隐藏界面", true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let full_i = MenuItem::with_id(&app, "ctx_full", "完整模式", true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-    let quit_i = MenuItem::with_id(&app, "ctx_quit", "退出", true, None::<&str>)
-        .map_err(|e| e.to_string())?;
-
-    let menu =
-        Menu::with_items(&app, &[&hide_i, &full_i, &quit_i]).map_err(|e| e.to_string())?;
-
-    let pos = window.cursor_position().map_err(|e| e.to_string())?;
-    menu.popup_at(&window, pos).map_err(|e| e.to_string())?;
-    Ok(())
-}
+   所以改成前端 HTML 自绘菜单（FocusContextMenu）——
+   顺带反而更符合需求：原生菜单没有字号/尺寸接口，而 HTML 菜单的
+   尺寸、字号、间距、圆角、阴影全部可控。
+   ──────────────────────────────────────────────────────────────── */
 
 fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
     write_setting_bool(app, "focusMode", enabled)?;
@@ -1109,7 +1096,6 @@ pub fn run() {
             set_always_on_top,
             set_mouse_passthrough,
             quit_app,
-            popup_focus_menu,
             update_shortcuts,
             webdav::webdav_set_config,
             webdav::webdav_get_config,
@@ -1196,18 +1182,6 @@ pub fn run() {
                     }
                     "tray_mouse_passthrough" => {
                         let _ = toggle_mouse_passthrough(app);
-                    }
-                    // 专注模式右键菜单（popup_focus_menu 弹出的那个）
-                    "ctx_hide" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.hide();
-                        }
-                    }
-                    "ctx_full" => {
-                        let _ = apply_focus_mode(app, false);
-                    }
-                    "ctx_quit" => {
-                        app.exit(0);
                     }
                     _ => {}
                 })

@@ -36,6 +36,7 @@ import { TodoContextMenu } from "./TodoContextMenu";
 import { TodoList } from "./TodoList";
 import { WeekCalendar } from "./WeekCalendar";
 import { FocusDragHandle } from "./FocusDragHandle";
+import { FocusContextMenu } from "./FocusContextMenu";
 
 /** 获取指定时间戳当天的开始时间（00:00:00） */
 function startOfDay(ts: number): number {
@@ -92,6 +93,8 @@ export function WidgetShell() {
   // 待办视图筛选：进行中 / 已完成
   const [todoView, setTodoView] = useState<"active" | "completed">("active");
   const [showSettings, setShowSettings] = useState(false);
+  /** 专注模式的右键菜单（HTML 自绘）位置；null = 不显示 */
+  const [focusMenu, setFocusMenu] = useState<{ x: number; y: number } | null>(null);
 
   // 直接获取 setTodoDueDate（拖拽到日历日期时需用）
   const setTodoDueDate = useTodoStore((s) => s.setTodoDueDate);
@@ -264,9 +267,8 @@ export function WidgetShell() {
     if (!focusMode) return;
     const handler = (e: MouseEvent) => {
       e.preventDefault();
-      void invoke("popup_focus_menu").catch((err) =>
-        console.warn("[LiteNote] 弹出专注菜单失败:", err),
-      );
+      // 记下位置，交给 FocusContextMenu 渲染（HTML 自绘，尺寸字号完全可控）
+      setFocusMenu({ x: e.clientX, y: e.clientY });
     };
     document.addEventListener("contextmenu", handler);
     return () => document.removeEventListener("contextmenu", handler);
@@ -279,6 +281,7 @@ export function WidgetShell() {
     setMenu(null);
     handleEndEdit();
     setShowSettings(false);
+    setFocusMenu(null);
   }, [focusMode, setMenu, handleEndEdit]);
 
   // 当前拖拽中的待办 id（用于 DragOverlay）
@@ -602,6 +605,24 @@ export function WidgetShell() {
           onSetRecurrence={menuActions.onSetRecurrence}
           onClearRecurrence={menuActions.onClearRecurrence}
           onCopyTo={menuActions.onCopyTo}
+        />
+      ) : null}
+
+      {/*
+        专注模式的右键菜单（HTML 自绘）。
+        放在这一层而不是 !focusMode 那个分支里，因为它**只在专注模式**出现。
+      */}
+      {focusMenu ? (
+        <FocusContextMenu
+          locale={locale}
+          x={focusMenu.x}
+          y={focusMenu.y}
+          onClose={() => setFocusMenu(null)}
+          onPick={(id) => {
+            if (id === "hide") handleHide();
+            else if (id === "full") setFocusMode(false);
+            else if (id === "quit") void invoke("quit_app");
+          }}
         />
       ) : null}
 
