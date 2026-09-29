@@ -71,6 +71,18 @@ export function useWidgetActions(locale: Locale) {
     setMenu({ id, x: e.clientX, y: e.clientY });
   }, []);
 
+  /**
+   * 关闭右键菜单时一并取消选中。
+   *
+   * 不这么做的话：右键 → 点菜单外面关掉 → 这一行的选中底色会一直留着，
+   * 看起来发灰、和别的行不一致（与 handleEndEdit 里对编辑态的处理同一个道理）。
+   * 菜单里的各项操作都作用在 menu.id 上，不依赖 selectedId，所以清掉是安全的。
+   */
+  const handleCloseMenu = useCallback(() => {
+    setMenu(null);
+    setSelectedId(null);
+  }, []);
+
   const handleEndEdit = useCallback(() => {
     if (editingId) commitTodoEdit(editingId);
     setEditingId(null);
@@ -154,6 +166,7 @@ export function useWidgetActions(locale: Locale) {
     menuTodo,
     // UI 状态
     selectedId,
+    handleCloseMenu,
     editingId,
     menu,
     confirmClear,

@@ -1,4 +1,9 @@
+/**
+ * 重要程度色 id，数组顺序即「由低到高」。
+ * hollow = 空心圆（只描边、不填充），是新增的最低一档：「还没定重要程度」。
+ */
 export const TODO_COLOR_IDS = [
+  "hollow",
   "none",
   "attention",
   "important",

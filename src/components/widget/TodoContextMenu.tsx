@@ -2,11 +2,13 @@ import { useEffect, useRef } from "react";
 import type { Locale } from "@/i18n";
 import type { MessageKey } from "@/i18n/messages";
 import { t } from "@/i18n";
-import { TODO_COLOR_IMPORTANCE_ORDER, TODO_COLOR_CSS_VAR } from "@/lib/todoImportanceColors";
+import { TODO_COLOR_IMPORTANCE_ORDER } from "@/lib/todoImportanceColors";
+import { COLOR_DOT_STYLE } from "@/lib/itemColors";
 import { todayEnd, tomorrowEnd, weekendEnd, formatDueDate } from "@/lib/dueDate";
 import type { TodoColorId, RecurrenceType } from "@/types/todo";
 
 const COLOR_TITLE_KEY: Record<TodoColorId, MessageKey> = {
+  hollow: "colorPriorityHollow",
   none: "colorPriorityNone",
   attention: "colorPriorityAttention",
   important: "colorPriorityImportant",
@@ -127,8 +129,10 @@ export function TodoContextMenu({
             <button
               key={c}
               type="button"
-              className="h-7 w-7 rounded-full border border-neutral-300/90 shadow-sm ring-offset-1 ring-offset-white transition hover:ring-2 hover:ring-neutral-400/60 focus-visible:outline focus-visible:ring-2 focus-visible:ring-sky-400"
-              style={{ background: TODO_COLOR_CSS_VAR[c] }}
+              /* 色板圆点缩到原来的 80%（28px → 22.4px）；
+                 hollow 用 COLOR_DOT_STYLE 的空心描边样式，所以这里整体展开该样式 */
+              className="h-[1.4rem] w-[1.4rem] rounded-full border border-neutral-300/90 shadow-sm ring-offset-1 ring-offset-white transition hover:ring-2 hover:ring-neutral-400/60 focus-visible:outline focus-visible:ring-2 focus-visible:ring-sky-400"
+              style={{ ...COLOR_DOT_STYLE[c] }}
               title={mk(COLOR_TITLE_KEY[c])}
               aria-label={mk(COLOR_TITLE_KEY[c])}
               onClick={() => {

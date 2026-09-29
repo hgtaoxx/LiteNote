@@ -159,6 +159,7 @@ export function WidgetShell() {
     recurrencePicker,
     copyToPickerFor,
     setMenu,
+    handleCloseMenu,
     setConfirmClear,
     setConfirmDeleteId,
     handleAdd,
@@ -594,7 +595,7 @@ export function WidgetShell() {
           pinned={menuTodo.pinned}
           dueDate={menuTodo.dueDate}
           isRecurring={menuTodo.isRecurring}
-          onClose={() => setMenu(null)}
+          onClose={handleCloseMenu}
           onPin={menuActions.onPin}
           onDelete={menuActions.onDelete}
           onToggleDone={menuActions.onToggleDone}

@@ -4,6 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import { COLOR_DOT_STYLE } from "@/lib/itemColors";
+import { TODO_COLOR_CSS_VAR } from "@/lib/todoImportanceColors";
 import { formatDueDate } from "@/lib/dueDate";
 import { formatRecurrence, computeNextDueDate } from "@/lib/recurrence";
 import type { TodoItem } from "@/types/todo";
@@ -103,13 +104,20 @@ function FocusTodoRow({
   locale: Locale;
   onToggleCompleted: () => void;
 }) {
-  const accent = COLOR_DOT_STYLE[todo.colorId].background;
+  const dotStyle = COLOR_DOT_STYLE[todo.colorId];
+  // 角标 / 勾号的前景色：不能取 dotStyle.background（hollow 是 transparent），
+  // 用同一档的纯色变量，空心圆也能有可见的前景色
+  const accent = TODO_COLOR_CSS_VAR[todo.colorId];
 
   return (
     <div
       data-tauri-no-drag
       className="flex cursor-default items-center gap-1 px-2 sm:px-3"
-      style={{ borderBottom: `1px solid var(--ln-theme-border)` }}
+      style={{
+        borderBottom: `1px solid var(--ln-theme-border)`,
+        // 与完整模式一致：置顶用极轻的琥珀底色提示（不再用文字标注）
+        background: todo.pinned ? "rgba(251, 191, 36, 0.10)" : "transparent",
+      }}
     >
       {todo.isRecurring ? (
         <button
@@ -124,8 +132,8 @@ function FocusTodoRow({
           }}
         >
           <span
-            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full"
-            style={{ background: accent }}
+            className="flex h-[0.7rem] w-[0.7rem] items-center justify-center rounded-full"
+            style={{ ...dotStyle }}
           />
           {/* 循环角标 */}
           <span
@@ -147,8 +155,8 @@ function FocusTodoRow({
           }}
         >
           <span
-            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full"
-            style={{ background: accent }}
+            className="flex h-[0.7rem] w-[0.7rem] items-center justify-center rounded-full"
+            style={{ ...dotStyle }}
           />
         </button>
       )}
@@ -199,7 +207,10 @@ function ManagementTodoRow({
   onEndEdit,
   onToggleCompleted,
 }: Omit<TodoRowProps, "focusMode">) {
-  const accent = COLOR_DOT_STYLE[todo.colorId].background;
+  const dotStyle = COLOR_DOT_STYLE[todo.colorId];
+  // 角标 / 勾号的前景色：不能取 dotStyle.background（hollow 是 transparent），
+  // 用同一档的纯色变量，空心圆也能有可见的前景色
+  const accent = TODO_COLOR_CSS_VAR[todo.colorId];
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // 仅未完成且非编辑态的待办可拖拽
@@ -290,7 +301,15 @@ function ManagementTodoRow({
       style={{
         ...style,
         borderBottom: `1px solid var(--ln-theme-border)`,
-        background: selected ? "var(--ln-theme-surface-active)" : "transparent",
+        /*
+          置顶不再用「↑ 置顶」文字标注，改成一层极轻的琥珀底色提示。
+          优先级：选中 > 置顶 > 普通（选中是操作反馈，必须盖过置顶底色）。
+        */
+        background: selected
+          ? "var(--ln-theme-surface-active)"
+          : todo.pinned
+            ? "rgba(251, 191, 36, 0.10)"
+            : "transparent",
       }}
     >
       {/* 循环待办：显示可点击的完成按钮（带循环角标） */}
@@ -311,8 +330,8 @@ function ManagementTodoRow({
           }}
         >
           <span
-            className="flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full"
-            style={{ background: accent }}
+            className="flex h-[0.7rem] w-[0.7rem] items-center justify-center rounded-full"
+            style={{ ...dotStyle }}
           />
           <span
             className="pointer-events-none absolute -right-0.5 -top-0.5 text-[0.6rem] leading-none"
@@ -339,15 +358,15 @@ function ManagementTodoRow({
         >
           <span
             className={
-              "flex h-[0.875rem] w-[0.875rem] items-center justify-center rounded-full text-[0.5rem] font-semibold leading-none" +
+              "flex h-[0.7rem] w-[0.7rem] items-center justify-center rounded-full text-[0.4rem] font-semibold leading-none" +
               (todo.completed ? " text-white" : "")
             }
             style={{
-              background: accent,
+              ...dotStyle,
               // 已完成：内描边 + 勾号，与未完成的纯实心点区分
               boxShadow: todo.completed
                 ? "inset 0 0 0 1px rgb(255 255 255 / 0.2)"
-                : undefined,
+                : dotStyle.boxShadow,
             }}
           >
             {todo.completed ? "✓" : null}
@@ -403,13 +422,8 @@ function ManagementTodoRow({
             >
               {todo.text || (locale === "zh-CN" ? "（空）" : "(empty)")}
             </span>
-            {(todo.pinned || dueLabel || recurrenceLabel) ? (
+            {(dueLabel || recurrenceLabel) ? (
               <div className="mt-0.5 flex items-center gap-1.5">
-                {todo.pinned ? (
-                  <span className="text-xs" style={{ color: "var(--ln-theme-text-secondary)" }}>
-                    ↑ {locale === "zh-CN" ? "置顶" : "Pinned"}
-                  </span>
-                ) : null}
                 {recurrenceLabel ? (
                   <span className="text-xs" style={{ color: "var(--ln-theme-text-secondary)" }}>
                     ↻ {recurrenceLabel}
