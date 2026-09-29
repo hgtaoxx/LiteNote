@@ -3,12 +3,12 @@ import { getVersion } from "@tauri-apps/api/app";
 import type { Locale } from "@/i18n";
 import type { MessageKey } from "@/i18n/messages";
 import { t } from "@/i18n";
-import { Icon } from "@/components/Icon";
 
 interface HeaderBarProps {
   locale: Locale;
-  alwaysOnTop: boolean;
-  onToggleAlwaysOnTop: () => void;
+  /** 窗口锁定态：锁定后不能移动、不能改大小，其余操作照常 */
+  windowLocked: boolean;
+  onToggleWindowLock: () => void;
   /** 鼠标穿透是否已开启（开启后界面点不到，只能从托盘关闭） */
   mousePassthrough: boolean;
   /** 开启鼠标穿透（只用于开启，关闭走托盘） */
@@ -35,8 +35,8 @@ const iconOnStyle = {
 
 export function HeaderBar({
   locale,
-  alwaysOnTop,
-  onToggleAlwaysOnTop,
+  windowLocked,
+  onToggleWindowLock,
   mousePassthrough,
   onEnableMousePassthrough,
   onEnterFocus,
@@ -55,13 +55,18 @@ export function HeaderBar({
   // 顶栏高度压缩为原 h-11(44px) 的 75% → 33px；图标按钮同步缩为 h-6(24px)，否则会撑满整栏
   return (
     <header
-      className="flex h-[33px] shrink-0 cursor-grab select-none items-center px-1 active:cursor-grabbing"
+      className={
+        "flex h-[33px] shrink-0 select-none items-center px-1 " +
+        // 锁定时不只是禁用拖拽区域，光标也要从「抓手」变回普通箭头，否则看着像还能拖
+        (windowLocked ? "cursor-default" : "cursor-grab active:cursor-grabbing")
+      }
       style={{ borderBottom: `1px solid var(--ln-theme-header-border)` }}
-      data-tauri-drag-region
+      /* 锁定时显式置为 "false"（Tauri 的显式禁止值），整条顶栏都不再能拖动窗口 */
+      data-tauri-drag-region={windowLocked ? "false" : "true"}
     >
       <div
         className="flex min-h-0 min-w-0 flex-1 items-center gap-1.5 self-stretch pl-2 pr-2"
-        data-tauri-drag-region
+        data-tauri-drag-region={windowLocked ? "false" : "true"}
       >
         <span className="truncate text-sm font-semibold leading-none" style={{ color: "var(--ln-theme-text)" }}>
           {mk("appName")}
@@ -158,12 +163,29 @@ export function HeaderBar({
           type="button"
           className={iconBtn}
           style={iconStyle}
-          title={alwaysOnTop ? mk("alwaysOnTopCancel") : mk("alwaysOnTop")}
-          aria-label={alwaysOnTop ? mk("alwaysOnTopCancel") : mk("alwaysOnTop")}
-          aria-pressed={alwaysOnTop}
-          onClick={onToggleAlwaysOnTop}
+          title={windowLocked ? mk("windowUnlock") : mk("windowLock")}
+          aria-label={windowLocked ? mk("windowUnlock") : mk("windowLock")}
+          aria-pressed={windowLocked}
+          onClick={onToggleWindowLock}
         >
-          <Icon name={alwaysOnTop ? "pushpin-fill" : "pushpin-line"} className="h-3.5 w-3.5" />
+          {/* 锁：关闭=实心锁梁，打开=开口锁梁（与顶栏其它图标同为内联 SVG 风格） */}
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <rect x="4.5" y="10.5" width="15" height="9.5" rx="1.8" />
+            {windowLocked ? (
+              <path d="M8 10.5V7.2a4 4 0 0 1 8 0v3.3" />
+            ) : (
+              <path d="M8 10.5V7.2a4 4 0 0 1 7.6-1.7" />
+            )}
+          </svg>
         </button>
         {/* 隐藏到托盘 */}
         <button

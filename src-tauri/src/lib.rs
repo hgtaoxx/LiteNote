@@ -384,7 +384,8 @@ fn read_focus_mode<R: Runtime>(app: &AppHandle<R>) -> bool {
     read_setting_bool(&conn, "focusMode", false)
 }
 
-fn read_always_on_top<R: Runtime>(app: &AppHandle<R>) -> bool {
+/// 窗口是否处于「锁定」状态：不能移动、不能改变大小，但界面照常可点可按可编辑
+fn read_window_locked<R: Runtime>(app: &AppHandle<R>) -> bool {
     let Some(db_path) = litenote_db_path(app) else {
         return false;
     };
@@ -394,7 +395,7 @@ fn read_always_on_top<R: Runtime>(app: &AppHandle<R>) -> bool {
     let Ok(conn) = Connection::open(&db_path) else {
         return false;
     };
-    read_setting_bool(&conn, "alwaysOnTop", false)
+    read_setting_bool(&conn, "windowLocked", false)
 }
 
 /// 鼠标穿透状态：开启后窗口忽略鼠标事件，点击落到下层窗口，只能从托盘关闭
@@ -414,7 +415,7 @@ fn read_mouse_passthrough<R: Runtime>(app: &AppHandle<R>) -> bool {
 fn build_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     focus_mode: bool,
-    always_on_top: bool,
+    window_locked: bool,
     mouse_passthrough: bool,
 ) -> tauri::Result<Menu<R>> {
     let show_i = MenuItem::with_id(app, "tray_show", "显示窗口", true, None::<&str>)?;
@@ -435,12 +436,13 @@ fn build_tray_menu<R: Runtime>(
         !focus_mode,
         None::<&str>,
     )?;
-    let pin_i = CheckMenuItem::with_id(
+    // 锁定窗口：不能移动、不能改变大小，其余操作照常
+    let lock_i = CheckMenuItem::with_id(
         app,
-        "tray_always_on_top",
-        "窗口置顶",
+        "tray_window_lock",
+        "锁定窗口",
         true,
-        always_on_top,
+        window_locked,
         None::<&str>,
     )?;
     // 鼠标穿透：开启后窗口点不到，只能从这里关闭。
@@ -468,7 +470,7 @@ fn build_tray_menu<R: Runtime>(
             &sep1,
             &focus_i,
             &manage_i,
-            &pin_i,
+            &lock_i,
             &passthrough_i,
             &sep2,
             &quit_i,
@@ -478,9 +480,9 @@ fn build_tray_menu<R: Runtime>(
 
 fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let focus_mode = read_focus_mode(app);
-    let always_on_top = read_always_on_top(app);
+    let window_locked = read_window_locked(app);
     let mouse_passthrough = read_mouse_passthrough(app);
-    let menu = build_tray_menu(app, focus_mode, always_on_top, mouse_passthrough)?;
+    let menu = build_tray_menu(app, focus_mode, window_locked, mouse_passthrough)?;
     if let Some(tray) = app.tray_by_id("litenote-tray") {
         tray.set_menu(Some(menu))?;
     }
@@ -589,10 +591,22 @@ fn quit_app<R: Runtime>(app: AppHandle<R>) {
     app.exit(0);
 }
 
-fn apply_always_on_top<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
-    write_setting_bool(app, "alwaysOnTop", enabled)?;
+/// 锁定 / 解锁窗口。
+///
+/// 「锁定」的含义（按用户要求）：**不能移动、不能改变窗口大小**，
+/// 但界面一切照常 —— 按钮能点、内容能改、能滚动。
+///
+/// 为什么"不能移动"需要动 Win32：Windows 下即使 decorations:false，
+/// 窗口仍带着 WS_CAPTION，顶部几像素被系统当成标题栏 —— 拖它就会移动窗口，
+/// 完全绕过 WebView。所以锁定时要连这些边框样式一起剥掉（见 set_window_frame_styles）。
+fn apply_window_lock<R: Runtime>(app: &AppHandle<R>, locked: bool) -> Result<(), String> {
+    write_setting_bool(app, "windowLocked", locked)?;
     if let Some(w) = app.get_webview_window("main") {
-        w.set_always_on_top(enabled).map_err(|e| format!("设置置顶失败: {e}"))?;
+        // 一、不能改变大小
+        w.set_resizable(!locked)
+            .map_err(|e| format!("锁定窗口大小失败: {e}"))?;
+        // 二、不能移动：剥掉标题栏样式（拖不动），同时保证不出现可见边框
+        set_window_frame_styles(&w, locked);
     }
     rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
     app.emit(
@@ -603,9 +617,66 @@ fn apply_always_on_top<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<
     Ok(())
 }
 
-fn toggle_always_on_top<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    apply_always_on_top(app, !read_always_on_top(app))
+fn toggle_window_lock<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    apply_window_lock(app, !read_window_locked(app))
 }
+
+/// Windows：按「是否锁定」收敛窗口边框样式。
+///
+/// 背景（有 TAO 源码依据）：`WindowFlags::to_window_styles()`
+/// （tao-0.35.2/src/platform_impl/windows/window_state.rs:244）会**无条件**加上
+/// `WS_CAPTION | WS_SYSMENU`，而只有「计算尺寸」的两条路径
+/// （to_adjusted_window_styles、WM_GETMINMAXINFO）才为无边框窗口去掉它们。
+/// 结果：运行时的窗口一直带着标题区域，顶部那一条被 Windows 当成标题栏 ——
+/// 左键拖它=移动窗口、右键点它=弹系统菜单，两者都绕过 WebView。
+///
+/// 取值：
+///   · 锁定   → 三种全剥掉（CAPTION | SYSMENU | THICKFRAME）：
+///              没有标题栏就拖不动；没有 THICKFRAME 就拉不动；
+///              而且**不会出现可见边框** —— 只剥 CAPTION 却留着 THICKFRAME
+///              会画出一条边框（这个坑踩过，用户看到过蓝框）
+///   · 未锁定 → 只把 CAPTION | SYSMENU 加回来，完整模式外观维持原样
+///
+/// 改完样式必须 SetWindowPos(..., SWP_FRAMECHANGED) 通知窗口重算非客户区，
+/// 否则样式改动对命中测试与绘制都不生效。
+#[cfg(windows)]
+fn set_window_frame_styles<R: Runtime>(w: &tauri::WebviewWindow<R>, locked: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_SYSMENU, WS_THICKFRAME,
+    };
+
+    let Ok(hwnd) = w.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as *mut core::ffi::c_void;
+
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_STYLE);
+        let frame = (WS_CAPTION | WS_SYSMENU | WS_THICKFRAME) as i32;
+        let new_style = if locked {
+            style & !frame
+        } else {
+            style | (WS_CAPTION | WS_SYSMENU) as i32
+        };
+
+        if new_style != style {
+            SetWindowLongW(hwnd, GWL_STYLE, new_style);
+            SetWindowPos(
+                hwnd,
+                core::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn set_window_frame_styles<R: Runtime>(_w: &tauri::WebviewWindow<R>, _locked: bool) {}
 
 /// 创建并展示一条独立提醒弹窗（置顶 / 不可被主窗口遮挡）
 fn show_reminder_window<R: Runtime>(app: &AppHandle<R>, row: &ReminderRow) {
@@ -860,8 +931,8 @@ fn set_mouse_passthrough(app: AppHandle, enabled: bool) -> Result<(), String> {
 
 /// 设置窗口置顶（托盘、快捷键、前端均可调用）
 #[tauri::command]
-fn set_always_on_top(app: AppHandle, enabled: bool) -> Result<(), String> {
-    apply_always_on_top(&app, enabled)
+fn set_window_locked(app: AppHandle, enabled: bool) -> Result<(), String> {
+    apply_window_lock(&app, enabled)
 }
 
 /// 重新注册全局快捷键（前端修改快捷键设置后调用）
@@ -914,13 +985,13 @@ pub(crate) fn read_setting_string_app<R: Runtime>(
 
 /// 从 settings 表读取快捷键配置并注册全局快捷键（空字符串 = 不注册）
 fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let (toggle_window, toggle_focus, toggle_pin, toggle_passthrough) =
+    let (toggle_window, toggle_focus, toggle_lock, toggle_passthrough) =
         match litenote_db_path(app) {
             Some(db_path) if db_path.exists() => match Connection::open(&db_path) {
                 Ok(conn) => (
                     read_setting_string(&conn, "shortcutToggleWindow", "CmdOrCtrl+Shift+L"),
                     read_setting_string(&conn, "shortcutFocusMode", "CmdOrCtrl+Shift+F"),
-                    read_setting_string(&conn, "shortcutPin", "CmdOrCtrl+Shift+P"),
+                    read_setting_string(&conn, "shortcutWindowLock", "CmdOrCtrl+Shift+P"),
                     read_setting_string(
                         &conn,
                         "shortcutMousePassthrough",
@@ -971,16 +1042,16 @@ fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> 
         }
     }
 
-    if !toggle_pin.is_empty() {
+    if !toggle_lock.is_empty() {
         if let Err(e) = app.global_shortcut().on_shortcut(
-            toggle_pin.as_str(),
+            toggle_lock.as_str(),
             move |app, _shortcut, event| {
                 if event.state == ShortcutState::Pressed {
-                    let _ = toggle_always_on_top(app);
+                    let _ = toggle_window_lock(app);
                 }
             },
         ) {
-            errors.push(format!("{toggle_pin}: {e}"));
+            errors.push(format!("{toggle_lock}: {e}"));
         }
     }
 
@@ -1093,7 +1164,7 @@ pub fn run() {
             reminder_action,
             hide_main_window,
             set_focus_mode,
-            set_always_on_top,
+            set_window_locked,
             set_mouse_passthrough,
             quit_app,
             update_shortcuts,
@@ -1128,8 +1199,11 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_maximizable(false);
-                let always_on_top = read_always_on_top(app.handle());
-                let _ = window.set_always_on_top(always_on_top);
+                let window_locked = read_window_locked(app.handle());
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.set_resizable(!window_locked);
+                    set_window_frame_styles(&window, window_locked);
+                }
             }
 
             #[cfg(target_os = "macos")]
@@ -1150,12 +1224,12 @@ pub fn run() {
             }
 
             let focus_mode = read_focus_mode(app.handle());
-            let always_on_top = read_always_on_top(app.handle());
+            let window_locked = read_window_locked(app.handle());
             let mouse_passthrough = read_mouse_passthrough(app.handle());
             let menu = build_tray_menu(
                 app.handle(),
                 focus_mode,
-                always_on_top,
+                window_locked,
                 mouse_passthrough,
             )?;
 
@@ -1177,8 +1251,8 @@ pub fn run() {
                     "tray_mode_manage" => {
                         let _ = apply_focus_mode(app, false);
                     }
-                    "tray_always_on_top" => {
-                        let _ = toggle_always_on_top(app);
+                    "tray_window_lock" => {
+                        let _ = toggle_window_lock(app);
                     }
                     "tray_mouse_passthrough" => {
                         let _ = toggle_mouse_passthrough(app);

@@ -51,8 +51,8 @@ function endOfDay(ts: number): number {
 }
 
 export function WidgetShell() {
-  const alwaysOnTop = useSettingsStore((s) => s.alwaysOnTop);
-  const setAlwaysOnTop = useSettingsStore((s) => s.setAlwaysOnTop);
+  const windowLocked = useSettingsStore((s) => s.windowLocked);
+  const setWindowLocked = useSettingsStore((s) => s.setWindowLocked);
   const panelOpacity = useSettingsStore((s) => s.panelOpacity);
   const setPanelOpacity = useSettingsStore((s) => s.setPanelOpacity);
   const localeMode = useSettingsStore((s) => s.localeMode);
@@ -315,15 +315,25 @@ export function WidgetShell() {
     return () => window.removeEventListener("litenote-webdav-restored", handler);
   }, [reloadFromDb, setTodoSuccess, locale]);
 
+  /**
+   * 锁定窗口的前端镜像。
+   *
+   * 锁定 = 不能移动、不能改变大小，其余操作照常：
+   *   · 不能改大小：这里 setResizable(false)（Rust 侧也会做，双保险）
+   *   · 不能移动：靠两处 —— 顶栏 / 拖拽条的 drag-region 一起禁用（本文件与 HeaderBar），
+   *     以及 Rust 侧剥掉 Windows 标题栏样式（顶部那几像素本来会被系统当标题栏拖动）
+   * 窗口「始终置顶」不再是一个开关：已写进 tauri.conf.json，恒为 true。
+   */
   useEffect(() => {
+    if (!settingsInitialized) return;
     void (async () => {
       try {
-        await getCurrentWindow().setAlwaysOnTop(alwaysOnTop);
-      } catch {
-        /* 浏览器预览 */
+        await getCurrentWindow().setResizable(!windowLocked);
+      } catch (e) {
+        console.warn("[LiteNote] 前端锁定窗口失败（Rust 侧仍会生效）:", e);
       }
     })();
-  }, [alwaysOnTop]);
+  }, [settingsInitialized, windowLocked]);
 
   const handleHide = useCallback(async () => {
     try {
@@ -424,7 +434,7 @@ export function WidgetShell() {
           >
             {/* 拖拽条始终占位（高度不变、切换时文字不跳），受限形态下仅禁用拖动 */}
             <FocusDragHandle
-              draggable={windowMode.movable}
+              draggable={windowMode.movable && !windowLocked}
               locked={windowMode.sizeLocked}
             />
             <TodoList
@@ -453,8 +463,8 @@ export function WidgetShell() {
         <div className="relative z-10 flex h-full min-h-0 w-full flex-col">
         <HeaderBar
           locale={locale}
-          alwaysOnTop={alwaysOnTop}
-          onToggleAlwaysOnTop={() => setAlwaysOnTop(!alwaysOnTop)}
+          windowLocked={windowLocked}
+          onToggleWindowLock={() => setWindowLocked(!windowLocked)}
           mousePassthrough={mousePassthrough}
           onEnableMousePassthrough={() => setMousePassthrough(true)}
           onEnterFocus={() => setFocusMode(true)}

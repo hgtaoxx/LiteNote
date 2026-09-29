@@ -26,7 +26,7 @@ export interface SettingsState {
   contentFontFamily: ContentFontId;
   panelOpacity: number;
   localeMode: LocaleMode;
-  alwaysOnTop: boolean;
+  windowLocked: boolean;
   autoStart: boolean;
   /** WebDAV 同步开关（用于内容变化后的自动同步判断；实际同步在 Rust 侧执行） */
   webdavEnabled: boolean;
@@ -37,7 +37,7 @@ export interface SettingsState {
   fullWindowHeight: number;
   shortcutToggleWindow: string;
   shortcutFocusMode: string;
-  shortcutPin: string;
+  shortcutWindowLock: string;
   shortcutMousePassthrough: string;
   initialized: boolean;
   /** 最近一次 DB 写入错误信息，供 UI 展示 */
@@ -51,7 +51,7 @@ export interface SettingsActions {
   setClockCollapsed: (v: boolean) => void;
   setShowSeconds: (v: boolean) => void;
   setWeekCalendarCollapsed: (v: boolean) => void;
-  setAlwaysOnTop: (v: boolean) => void;
+  setWindowLocked: (v: boolean) => void;
   setMousePassthrough: (v: boolean) => void;
   setContentFontSize: (v: number) => void;
   setContentFontFamily: (v: ContentFontId) => void;
@@ -174,11 +174,11 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
       );
     },
 
-    setAlwaysOnTop: (v) => {
-      set({ alwaysOnTop: v });
-      invoke("set_always_on_top", { enabled: v }).catch((e) => {
+    setWindowLocked: (v) => {
+      set({ windowLocked: v });
+      invoke("set_window_locked", { enabled: v }).catch((e) => {
         const msg = e instanceof Error ? e.message : String(e);
-        set({ lastError: `设置置顶失败: ${msg}` });
+        set({ lastError: `锁定窗口失败: ${msg}` });
         void useSettingsStore.getState().reloadFromDb();
       });
     },

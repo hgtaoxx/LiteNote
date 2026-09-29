@@ -22,7 +22,7 @@ export type ThemeId = "glass" | "dark" | "light" | "yellow" | "gray" | "pink";
 export type ShortcutKey =
   | "shortcutToggleWindow"
   | "shortcutFocusMode"
-  | "shortcutPin"
+  | "shortcutWindowLock"
   | "shortcutMousePassthrough";
 
 /** 所有设置项的默认值，作为唯一真实来源 */
@@ -38,7 +38,11 @@ export const DEFAULT_SETTINGS = {
   contentFontFamily: "system" as ContentFontId,
   panelOpacity: 0.88,
   localeMode: "system" as LocaleMode,
-  alwaysOnTop: false,
+  /**
+   * 锁定窗口：不能移动、不能改变大小，但界面照常可点可按可编辑。
+   * （原来的「窗口置顶」开关已按用户要求取消；窗口改为在配置里恒为置顶）
+   */
+  windowLocked: false,
   autoStart: true,
   theme: "glass" as ThemeId,
   reminderMode: "popup" as "popup" | "system",
@@ -47,7 +51,7 @@ export const DEFAULT_SETTINGS = {
   fullWindowHeight: 620,
   shortcutToggleWindow: "CmdOrCtrl+Shift+L",
   shortcutFocusMode: "CmdOrCtrl+Shift+F",
-  shortcutPin: "CmdOrCtrl+Shift+P",
+  shortcutWindowLock: "CmdOrCtrl+Shift+P",
   /** 鼠标穿透 / 专注模式下的界面锁定（M = 鼠标 Mouse） */
   shortcutMousePassthrough: "CmdOrCtrl+Shift+M",
   // WebDAV 同步（密码不在此处，由 Rust 端加密存储）
@@ -72,7 +76,7 @@ export interface AppSettings {
   readonly contentFontFamily: ContentFontId;
   readonly panelOpacity: number;
   readonly localeMode: LocaleMode;
-  readonly alwaysOnTop: boolean;
+  readonly windowLocked: boolean;
   readonly autoStart: boolean;
   readonly theme: ThemeId;
   readonly reminderMode: "popup" | "system";
@@ -81,7 +85,7 @@ export interface AppSettings {
   readonly fullWindowHeight: number;
   readonly shortcutToggleWindow: string;
   readonly shortcutFocusMode: string;
-  readonly shortcutPin: string;
+  readonly shortcutWindowLock: string;
   readonly shortcutMousePassthrough: string;
   readonly webdavEnabled: boolean;
   readonly webdavUrl: string;

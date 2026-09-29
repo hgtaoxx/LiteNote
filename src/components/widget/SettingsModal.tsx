@@ -384,8 +384,8 @@ function AboutTab({ locale }: { locale: Locale }) {
           clearLabel={mk("shortcutClear")}
         />
         <EditableShortcutRow
-          label={mk("shortcutPin")}
-          shortcutKey="shortcutPin"
+          label={mk("shortcutWindowLock")}
+          shortcutKey="shortcutWindowLock"
           notSetText={mk("shortcutNotSet")}
           pressKeysText={mk("shortcutPressKeys")}
           conflictText={mk("shortcutConflict")}
@@ -530,7 +530,7 @@ function EditableShortcutRow({
           [
             "shortcutToggleWindow",
             "shortcutFocusMode",
-            "shortcutPin",
+            "shortcutWindowLock",
             "shortcutMousePassthrough",
           ] as ShortcutKey[]
         ).some((k) => k !== shortcutKey && state[k] === shortcut);

@@ -38,3 +38,11 @@ base64 = "0.22"
 http = "1"
 rand = "0.8"
 
+# 仅 Windows：锁定窗口时剥掉 TAO 无条件加上的标题栏 / 系统菜单样式
+# （见 lib.rs 的 set_window_frame_styles —— 这是「不能移动」的关键）
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
