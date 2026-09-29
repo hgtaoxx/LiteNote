@@ -31,6 +31,10 @@ fn window_persist_flags() -> StateFlags {
 
 pub(crate) const SETTINGS_UPDATED_EVENT: &str = "litenote-settings-updated";
 
+/// 待办数据变化（前端 todoStore 已在监听这个名字，带 source 去重）。
+/// 提醒窗口弹窗操作后就是发这个事件让主窗口重新读库的。
+pub(crate) const TODOS_UPDATED_EVENT: &str = "litenote-todos-updated";
+
 /// 循环待办：根据当前截止时间和规则计算下一次截止时间戳
 fn compute_next_due(current_due_ms: i64, recurrence_type: &str, config: &str) -> Option<i64> {
     use std::collections::HashMap;
@@ -1331,6 +1335,9 @@ pub fn run() {
 
             // 启动 Rust 端后台 WebDAV 同步轮询（仅启用时执行单向上传）
             webdav::start_webdav_sync_poll(app.handle());
+
+            // 启动时自动拉取一次远端（多设备：每次打开轻签就能拿到别的设备的改动）
+            webdav::startup_pull(app.handle());
 
             // 全局快捷键：从设置中读取配置并注册
             if let Err(e) = register_all_shortcuts(app.handle()) {

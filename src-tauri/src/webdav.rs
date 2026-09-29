@@ -21,7 +21,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::{
     litenote_db_path, now_ms, read_setting_bool, read_setting_bool_app, read_setting_string,
-    read_setting_string_app, SETTINGS_UPDATED_EVENT,
+    read_setting_string_app, SETTINGS_UPDATED_EVENT, TODOS_UPDATED_EVENT,
 };
 
 /// 远端文件名（存于用户配置的 remotePath 目录下，默认 /zhangjianzoutianya/litenote.json）
@@ -529,6 +529,38 @@ fn sync_tick<R: Runtime>(app: &AppHandle<R>) {
         eprintln!("[LiteNote] WebDAV 后台同步失败: {e}");
     }
     // set_last_sync 由 sync_to_webdav 内部在成功时调用
+}
+
+/// 启动时自动拉取一次远端（用户要求：每次打开轻签就拉一次）。
+///
+/// 用 `force = true` 跳过内容指纹判断 —— 这里的目的正是"把别的设备的改动拉下来"，
+/// 本地内容没变也必须走一遍完整双向同步（按 update_time 合并，不会覆盖本地更新的条目）。
+///
+/// 合并结果会写回本地数据库，所以完成后发一个待办更新事件，
+/// 前端 todoStore 已经在监听这个事件，收到就会重新读库。
+pub fn startup_pull<R: Runtime>(app: &AppHandle<R>) {
+    if !read_setting_bool_app(app, "webdavEnabled", false) {
+        return;
+    }
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // 等窗口、数据库、前端都稳定下来再拉，避免和启动期的读写打架
+        tokio::time::sleep(Duration::from_secs(6)).await;
+
+        let h = handle.clone();
+        let _ = tokio::task::spawn_blocking(move || match sync_to_webdav(&h, None, true) {
+            Ok(_) => {
+                eprintln!("[webdav] 启动自动拉取完成");
+                let _ = h.emit(
+                    TODOS_UPDATED_EVENT,
+                    serde_json::json!({ "ts": now_ms(), "source": "webdav-startup" }),
+                );
+            }
+            Err(e) => eprintln!("[LiteNote] 启动自动拉取失败: {e}"),
+        })
+        .await;
+    });
 }
 
 /// 启动 Rust 端后台同步轮询（异步运行时内循环，仅在启用时执行同步）
