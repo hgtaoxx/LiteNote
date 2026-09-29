@@ -341,16 +341,38 @@ fn get_config<R: Runtime>(
     } else {
         let pass_enc = read_setting_string_app(app, "webdavPass", "");
         if pass_enc.is_empty() {
-            return Err("WebDAV 配置不完整，请先在设置中填写服务器地址、账号和密码".into());
+            // 以前这里和「地址/账号为空」共用同一句话，根本分不清是哪个字段缺。
+            // 拆开之后一次就能定位。
+            return Err(
+                "WebDAV 未保存密码：请在设置里重新填写一次密码（坚果云必须用「应用密码」，\
+                 不是登录密码），填好后点「立即同步」即会存下来"
+                    .into(),
+            );
         }
-        decrypt_secret(&pass_enc)?
+        decrypt_secret(&pass_enc).map_err(|e| {
+            format!("WebDAV 已保存的密码无法解密（{e}）：请在设置里重新填写一次密码")
+        })?
     };
     let remote_path = ov.and_then(|o| o.remote_path.clone()).filter(|s| !s.is_empty())
         .unwrap_or_else(|| read_setting_string_app(app, "webdavRemotePath", DEFAULT_REMOTE_PATH));
 
     if url.is_empty() || user.is_empty() {
-        return Err("WebDAV 配置不完整，请先在设置中填写服务器地址、账号和密码".into());
+        let missing = match (url.is_empty(), user.is_empty()) {
+            (true, true) => "服务器地址和账号",
+            (true, false) => "服务器地址",
+            _ => "账号",
+        };
+        return Err(format!("WebDAV 配置不完整：{missing}为空，请在设置里填写"));
     }
+
+    // 关键信息只打「有/空」，不打印密码本身，便于排查又不会泄漏
+    eprintln!(
+        "[webdav] 配置检查: url={} user={} pass={} remote={}",
+        if url.is_empty() { "空" } else { "有" },
+        if user.is_empty() { "空" } else { "有" },
+        if pass.is_empty() { "空" } else { "有" },
+        if remote_path.is_empty() { "空" } else { "有" },
+    );
 
     Ok((url, user, pass, remote_path, enabled))
 }
