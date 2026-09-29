@@ -607,6 +607,14 @@ const SYNC_METHODS: Array<{ value: string; labelKey: "syncPresetJianguoyun" }> =
   { value: "jianguoyun", labelKey: "syncPresetJianguoyun" },
 ];
 
+/**
+ * 坚果云 WebDAV 地址（同步方式目前只有它，所以直接作为默认值）。
+ *
+ * 之前只放在 placeholder 里 —— 灰色提示看着就像已经填好了，
+ * 很容易漏填，然后同步时报「配置不完整」（用户实际踩过一次）。
+ */
+const JIANGUOYUN_URL = "https://dav.jianguoyun.com/dav/";
+
 function formatSyncTime(ts: number, neverText: string): string {
   if (!ts) return neverText;
   const d = new Date(ts);
@@ -617,7 +625,7 @@ function formatSyncTime(ts: number, neverText: string): string {
 function SyncSettings({ locale }: { locale: Locale }) {
   const mk = (key: MessageKey) => t(locale, key);
   const [enabled, setEnabled] = useState(false);
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(JIANGUOYUN_URL);
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   // 默认远端路径统一取自 DEFAULT_SETTINGS，避免和 Rust 侧 / 前端默认值三处脱节
@@ -632,7 +640,8 @@ function SyncSettings({ locale }: { locale: Locale }) {
     try {
       const cfg = await webdavGetConfig();
       setEnabled(cfg.enabled);
-      setUrl(cfg.url);
+      // 库里没存地址就带出坚果云默认值：不给用户"留空"的机会
+      setUrl(cfg.url || JIANGUOYUN_URL);
       setUser(cfg.user);
       setRemotePath(cfg.remotePath || DEFAULT_SETTINGS.webdavRemotePath);
       setPass(cfg.pass || "");
