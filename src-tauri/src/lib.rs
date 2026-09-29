@@ -642,29 +642,28 @@ fn toggle_window_lock<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     apply_window_lock(app, !read_window_locked(app))
 }
 
-/// Windows：按「是否锁定」收敛窗口边框样式。
+/// Windows：按「是否锁定」调整窗口样式位。
 ///
 /// 背景（有 TAO 源码依据）：`WindowFlags::to_window_styles()`
-/// （tao-0.35.2/src/platform_impl/windows/window_state.rs:244）会**无条件**加上
-/// `WS_CAPTION | WS_SYSMENU`，而只有「计算尺寸」的两条路径
-/// （to_adjusted_window_styles、WM_GETMINMAXINFO）才为无边框窗口去掉它们。
-/// 结果：运行时的窗口一直带着标题区域，顶部那一条被 Windows 当成标题栏 ——
+/// （tao-0.35.2/src/platform_impl/windows/window_state.rs:244）会加上
+/// `WS_CAPTION | WS_SYSMENU`。窗口创建时客户区是按「不含标题栏」算的，
+/// 所以标题栏/边框虽然存在、却**被 WebView 完整盖住**，平时看不见；
+/// 但命中测试读的是样式位 —— 顶部那一条因此被当成标题栏：
 /// 左键拖它=移动窗口、右键点它=弹系统菜单，两者都绕过 WebView。
 ///
 /// 取值：
-///   · 锁定   → 三种全剥掉（CAPTION | SYSMENU | THICKFRAME）：
-///              没有标题栏就拖不动；没有 THICKFRAME 就拉不动；
-///              而且**不会出现可见边框** —— 只剥 CAPTION 却留着 THICKFRAME
-///              会画出一条边框（这个坑踩过，用户看到过蓝框）
-///   · 未锁定 → 只把 CAPTION | SYSMENU 加回来，完整模式外观维持原样
+///   · 锁定   → 剥掉 CAPTION | SYSMENU | THICKFRAME：没有标题栏就拖不动，
+///              没有 THICKFRAME 也拉不动
+///   · 未锁定 → 把 CAPTION | SYSMENU 加回来，恢复原来的行为
 ///
-/// 改完样式必须 SetWindowPos(..., SWP_FRAMECHANGED) 通知窗口重算非客户区，
-/// 否则样式改动对命中测试与绘制都不生效。
+/// ⚠️ 这里**绝对不能**调 `SetWindowPos(..., SWP_FRAMECHANGED)`。
+/// 它会触发非客户区重算，把原本被 WebView 盖住的标题栏**露出来** ——
+/// 用户看到的顶部白条 + 左上角淡淡的「轻签」标题就是这么来的（踩过一次）。
+/// 只改样式位就够了：命中测试（能不能拖）立即跟着变，客户区尺寸完全不动。
 #[cfg(windows)]
 fn set_window_frame_styles<R: Runtime>(w: &tauri::WebviewWindow<R>, locked: bool) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_SYSMENU, WS_THICKFRAME,
+        GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_CAPTION, WS_SYSMENU, WS_THICKFRAME,
     };
 
     let Ok(hwnd) = w.hwnd() else {
@@ -674,24 +673,15 @@ fn set_window_frame_styles<R: Runtime>(w: &tauri::WebviewWindow<R>, locked: bool
 
     unsafe {
         let style = GetWindowLongW(hwnd, GWL_STYLE);
-        let frame = (WS_CAPTION | WS_SYSMENU | WS_THICKFRAME) as i32;
         let new_style = if locked {
-            style & !frame
+            style & !((WS_CAPTION | WS_SYSMENU | WS_THICKFRAME) as i32)
         } else {
             style | (WS_CAPTION | WS_SYSMENU) as i32
         };
 
         if new_style != style {
+            // 只改样式位，**不要**再调 SetWindowPos（原因见上面的 ⚠️）
             SetWindowLongW(hwnd, GWL_STYLE, new_style);
-            SetWindowPos(
-                hwnd,
-                core::ptr::null_mut(),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            );
         }
     }
 }
