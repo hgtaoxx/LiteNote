@@ -249,6 +249,29 @@ export function WidgetShell() {
     return () => window.clearTimeout(timer);
   }, [todos, webdavEnabled, settingsInitialized]);
 
+  /**
+   * 专注模式：右键**任意位置**弹出应用自己的菜单（隐藏界面 / 完整模式 / 退出）。
+   *
+   * 为什么自己做：WebView2 自带的右键菜单没有任何字号/尺寸/排版接口，改不了，
+   * 所以启动时已经把它整个关掉（Rust 侧 disable_native_context_menu），
+   * 右键就完全交回应用。菜单本体是 Rust 侧的原生菜单（popup_focus_menu），
+   * 外观与系统一致，位置跟着鼠标走。
+   *
+   * ⚠️ 只在专注模式注册、退出时立刻移除，所以**完整模式下的右键完全不受影响**
+   * （待办行仍然是自己的 TodoContextMenu）。
+   */
+  useEffect(() => {
+    if (!focusMode) return;
+    const handler = (e: MouseEvent) => {
+      e.preventDefault();
+      void invoke("popup_focus_menu").catch((err) =>
+        console.warn("[LiteNote] 弹出专注菜单失败:", err),
+      );
+    };
+    document.addEventListener("contextmenu", handler);
+    return () => document.removeEventListener("contextmenu", handler);
+  }, [focusMode]);
+
   // 进入专注模式时关闭编辑态、右键菜单与模态框。
   // 专注模式不渲染这些 UI，不清掉的话切回完整模式会「突然又弹出来」。
   useEffect(() => {
