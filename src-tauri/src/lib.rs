@@ -593,26 +593,103 @@ fn quit_app<R: Runtime>(app: AppHandle<R>) {
     app.exit(0);
 }
 
-/// 把「锁定」真正落到窗口上（**幂等，可重复调用**）。
-///
-/// ⚠️ 为什么必须能重复调用：`set_resizable` 会让 TAO 重新套用窗口样式
-/// （WindowFlags::apply_diff → to_window_styles），**把 WS_CAPTION 又加回来** ——
-/// 而前端 useFocusWindowSize 在切模式时会调三次 setResizable，
-/// 于是刚剥掉的标题栏立刻长回来，顶部又能拖动（用户实测就是这个现象）。
-/// 所以：模式切换、启动、以及前端收尾，都要再调一次这个函数，
-/// 保证「锁定」永远是最后落地的那一方。
-fn apply_window_lock_effects<R: Runtime>(app: &AppHandle<R>) {
-    let locked = read_window_locked(app);
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_resizable(!locked);
-        set_window_frame_styles(&w, locked);
+/* ────────────────────────────────────────────────────────────────
+   窗口锁定：劫持窗口过程，只拦 WM_NCHITTEST（桌面整理工具的做法）
+
+   为什么不改窗口样式（前两版走过的弯路，都记录在这里）：
+     · TAO 的 WindowFlags::apply_diff 只要发现 flags 变了，就会
+       ① 重新套用 to_window_styles()，把 WS_CAPTION 加回来 → 锁定失效 ✗
+       ② 调 SetWindowPos(SWP_FRAMECHANGED) 重算非客户区 → 本来被 WebView
+          完整盖住的标题栏露出来 → 顶部白条 + 淡淡的窗口标题 ✗
+     · 而 set_resizable / show / hide / set_ignore_cursor_events 全都会触发它，
+       所以"剥掉 → 被加回 → 再剥"是在跟框架打架，永远打不赢。
+
+   现在改成：**样式一位都不动**，只劫持窗口过程拦 WM_NCHITTEST ——
+   锁定时一律返回 HTCLIENT，于是标题栏拖动、边缘拉伸、系统菜单全部失效，
+   而客户区内部（点击、滚动、编辑）完全不受影响。
+   视觉上零变化：既没有白条，也没有边框。
+   ──────────────────────────────────────────────────────────────── */
+
+/// 原窗口过程（只装一次）；0 表示还没装
+static ORIGINAL_WNDPROC: std::sync::atomic::AtomicIsize =
+    std::sync::atomic::AtomicIsize::new(0);
+/// 当前是否处于「锁定」：由 apply_window_lock_effects 更新
+static WINDOW_LOCKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+unsafe extern "system" fn lock_wndproc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use std::sync::atomic::Ordering;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, DefWindowProcW, HTCLIENT, WM_NCHITTEST,
+    };
+
+    // 锁定时：整个窗口都算「客户区」→ 拖不动、拉不动、也不弹系统菜单
+    if msg == WM_NCHITTEST && WINDOW_LOCKED.load(Ordering::Relaxed) {
+        return HTCLIENT as isize;
+    }
+
+    let prev = ORIGINAL_WNDPROC.load(Ordering::Relaxed);
+    if prev == 0 {
+        return DefWindowProcW(hwnd, msg, wparam, lparam);
+    }
+    // 其余消息原样转发给 TAO 原来的窗口过程，绝不改变它的行为
+    let proc: windows_sys::Win32::UI::WindowsAndMessaging::WNDPROC =
+        std::mem::transmute(prev);
+    CallWindowProcW(proc, hwnd, msg, wparam, lparam)
+}
+
+/// 安装命中测试拦截（幂等，只会真正装一次）
+#[cfg(windows)]
+fn install_lock_subclass<R: Runtime>(w: &tauri::WebviewWindow<R>) {
+    use std::sync::atomic::Ordering;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
+
+    if ORIGINAL_WNDPROC.load(Ordering::Relaxed) != 0 {
+        return;
+    }
+    let Ok(hwnd) = w.hwnd() else {
+        return;
+    };
+    let hwnd = hwnd.0 as *mut core::ffi::c_void;
+
+    unsafe {
+        let new_proc = lock_wndproc as *const () as usize as isize;
+        let prev = SetWindowLongPtrW(hwnd, GWLP_WNDPROC, new_proc);
+        if prev != 0 {
+            ORIGINAL_WNDPROC.store(prev, Ordering::Relaxed);
+            eprintln!("[LiteNote] 已安装窗口锁定拦截（WM_NCHITTEST）");
+        }
     }
 }
 
-/// 供前端在改完窗口尺寸限制（setResizable）之后调用：再收敛一次锁定状态。
+#[cfg(not(windows))]
+fn install_lock_subclass<R: Runtime>(_w: &tauri::WebviewWindow<R>) {}
+
+/// 把「锁定」状态同步给窗口过程（幂等、可任意次调用）。
 ///
-/// 顺序很关键：前端那几次 setResizable 会把标题栏样式带回来，
-/// 必须由这个命令在它们之后把样式重新剥掉，否则「不能移动」就失效。
+/// 只更新一个原子标志，**不碰任何窗口 API** —— 所以不会引发 TAO 重套样式，
+/// 也就不会冒出白条或边框。首次调用时顺便安装拦截。
+fn apply_window_lock_effects<R: Runtime>(app: &AppHandle<R>) {
+    // 两种「锁」都统一走命中测试拦截：
+    //   · 锁定窗口（用户手动开启的开关）
+    //   · 专注 + 鼠标穿透 = 界面锁定
+    //     （原本用 setResizable(false) 实现，但那会触发 TAO 重套样式并重算
+    //      非客户区，把被 WebView 盖住的标题栏露出来 → 顶部白条，所以一并挪过来）
+    let locked = read_window_locked(app);
+    let focus_lock = read_focus_mode(app) && read_mouse_passthrough(app);
+    if let Some(w) = app.get_webview_window("main") {
+        install_lock_subclass(&w);
+    }
+    WINDOW_LOCKED.store(locked || focus_lock, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 供前端在改完窗口尺寸限制之后调用（保留为幂等收尾；现在它不碰窗口 API）
 #[tauri::command]
 fn refresh_window_lock<R: Runtime>(app: AppHandle<R>) {
     apply_window_lock_effects(&app);
@@ -622,10 +699,7 @@ fn refresh_window_lock<R: Runtime>(app: AppHandle<R>) {
 ///
 /// 「锁定」的含义（按用户要求）：**不能移动、不能改变窗口大小**，
 /// 但界面一切照常 —— 按钮能点、内容能改、能滚动。
-///
-/// 为什么"不能移动"需要动 Win32：Windows 下即使 decorations:false，
-/// 窗口仍带着 WS_CAPTION，顶部几像素被系统当成标题栏 —— 拖它就会移动窗口，
-/// 完全绕过 WebView。所以锁定时要连这些边框样式一起剥掉（见 set_window_frame_styles）。
+/// 实现见上面的 lock_wndproc：只拦命中测试，不动窗口样式。
 fn apply_window_lock<R: Runtime>(app: &AppHandle<R>, locked: bool) -> Result<(), String> {
     write_setting_bool(app, "windowLocked", locked)?;
     apply_window_lock_effects(app);
@@ -641,53 +715,6 @@ fn apply_window_lock<R: Runtime>(app: &AppHandle<R>, locked: bool) -> Result<(),
 fn toggle_window_lock<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     apply_window_lock(app, !read_window_locked(app))
 }
-
-/// Windows：按「是否锁定」调整窗口样式位。
-///
-/// 背景（有 TAO 源码依据）：`WindowFlags::to_window_styles()`
-/// （tao-0.35.2/src/platform_impl/windows/window_state.rs:244）会加上
-/// `WS_CAPTION | WS_SYSMENU`。窗口创建时客户区是按「不含标题栏」算的，
-/// 所以标题栏/边框虽然存在、却**被 WebView 完整盖住**，平时看不见；
-/// 但命中测试读的是样式位 —— 顶部那一条因此被当成标题栏：
-/// 左键拖它=移动窗口、右键点它=弹系统菜单，两者都绕过 WebView。
-///
-/// 取值：
-///   · 锁定   → 剥掉 CAPTION | SYSMENU | THICKFRAME：没有标题栏就拖不动，
-///              没有 THICKFRAME 也拉不动
-///   · 未锁定 → 把 CAPTION | SYSMENU 加回来，恢复原来的行为
-///
-/// ⚠️ 这里**绝对不能**调 `SetWindowPos(..., SWP_FRAMECHANGED)`。
-/// 它会触发非客户区重算，把原本被 WebView 盖住的标题栏**露出来** ——
-/// 用户看到的顶部白条 + 左上角淡淡的「轻签」标题就是这么来的（踩过一次）。
-/// 只改样式位就够了：命中测试（能不能拖）立即跟着变，客户区尺寸完全不动。
-#[cfg(windows)]
-fn set_window_frame_styles<R: Runtime>(w: &tauri::WebviewWindow<R>, locked: bool) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, GWL_STYLE, WS_CAPTION, WS_SYSMENU, WS_THICKFRAME,
-    };
-
-    let Ok(hwnd) = w.hwnd() else {
-        return;
-    };
-    let hwnd = hwnd.0 as *mut core::ffi::c_void;
-
-    unsafe {
-        let style = GetWindowLongW(hwnd, GWL_STYLE);
-        let new_style = if locked {
-            style & !((WS_CAPTION | WS_SYSMENU | WS_THICKFRAME) as i32)
-        } else {
-            style | (WS_CAPTION | WS_SYSMENU) as i32
-        };
-
-        if new_style != style {
-            // 只改样式位，**不要**再调 SetWindowPos（原因见上面的 ⚠️）
-            SetWindowLongW(hwnd, GWL_STYLE, new_style);
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn set_window_frame_styles<R: Runtime>(_w: &tauri::WebviewWindow<R>, _locked: bool) {}
 
 /// 创建并展示一条独立提醒弹窗（置顶 / 不可被主窗口遮挡）
 fn show_reminder_window<R: Runtime>(app: &AppHandle<R>, row: &ReminderRow) {
@@ -1215,12 +1242,11 @@ pub fn run() {
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_maximizable(false);
-                let window_locked = read_window_locked(app.handle());
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_resizable(!window_locked);
-                    set_window_frame_styles(&window, window_locked);
-                }
             }
+            // 安装窗口锁定拦截（WM_NCHITTEST）并同步当前锁定状态。
+            // 这里刻意不调 set_resizable：它会让 TAO 重套样式并重算非客户区，
+            // 从而露出被 WebView 盖住的标题栏（顶部白条）。
+            apply_window_lock_effects(app.handle());
 
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);

@@ -8,7 +8,6 @@ import {
   lockWindowSize,
   readWindowInnerSize,
   setWindowLogicalSize,
-  setWindowResizable,
   unlockWindowSize,
   isLikelyFullModeSize,
   isOversizedFullSize,
@@ -126,8 +125,12 @@ export function useFocusWindowSize(
         }
 
         // 专注 + 穿透 → 锁死尺寸；专注无穿透 → 解锁、自由缩放
+        //
+        // ⚠️ 这里刻意**不再调 setWindowResizable**：
+        // 它会改 WindowFlags，令 TAO 重套窗口样式并调 SWP_FRAMECHANGED 重算
+        // 非客户区，把本来被 WebView 完整盖住的标题栏露出来（用户看到的顶部白条）。
+        // 「不可调整大小」现在由 Rust 侧的 WM_NCHITTEST 拦截统一负责。
         if (sizeLocked) {
-          await setWindowResizable(false);
           if (entering) {
             // 刚进入：直接锁到上面设好的正方形尺寸。
             // 不回读窗口尺寸——setSize 刚发出，窗口管理器可能还没应用，回读会拿到旧尺寸。
@@ -141,22 +144,16 @@ export function useFocusWindowSize(
           }
         } else {
           await unlockWindowSize();
-          await setWindowResizable(true);
         }
-        /*
-          收尾：上面这些 setResizable 会让 TAO 重新套用窗口样式、
-          把 WS_CAPTION 又加回来（于是锁定的窗口顶部又能拖动了）。
-          必须在最后让 Rust 把锁定状态重新收敛一次。
-        */
+        // 让 Rust 依据「锁定窗口 / 界面锁定」重新同步命中测试拦截状态
         void invoke("refresh_window_lock").catch(() => {});
         commit();
         return;
       }
 
       if (wasFocus === true) {
-        // 退出专注：先解锁，再恢复完整模式尺寸与自由缩放
+        // 退出专注：解锁尺寸并恢复完整模式尺寸
         await unlockWindowSize();
-        await setWindowResizable(true);
         await setWindowLogicalSize(fullSizeRef.current);
         void invoke("refresh_window_lock").catch(() => {});
         commit();
