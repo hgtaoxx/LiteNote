@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { saveSetting } from "@/lib/db";
 import {
   computeFocusWindowHeight,
@@ -142,6 +143,12 @@ export function useFocusWindowSize(
           await unlockWindowSize();
           await setWindowResizable(true);
         }
+        /*
+          收尾：上面这些 setResizable 会让 TAO 重新套用窗口样式、
+          把 WS_CAPTION 又加回来（于是锁定的窗口顶部又能拖动了）。
+          必须在最后让 Rust 把锁定状态重新收敛一次。
+        */
+        void invoke("refresh_window_lock").catch(() => {});
         commit();
         return;
       }
@@ -151,6 +158,7 @@ export function useFocusWindowSize(
         await unlockWindowSize();
         await setWindowResizable(true);
         await setWindowLogicalSize(fullSizeRef.current);
+        void invoke("refresh_window_lock").catch(() => {});
         commit();
         return;
       }

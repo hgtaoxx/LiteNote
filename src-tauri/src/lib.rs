@@ -501,6 +501,8 @@ fn apply_effective_passthrough<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_ignore_cursor_events(enabled);
     }
+    // 切模式时前端也会调 setResizable（会把标题栏样式带回来），这里顺手再收敛一次
+    apply_window_lock_effects(app);
 }
 
 /// 关掉 WebView2 自带的右键菜单。
@@ -591,6 +593,31 @@ fn quit_app<R: Runtime>(app: AppHandle<R>) {
     app.exit(0);
 }
 
+/// 把「锁定」真正落到窗口上（**幂等，可重复调用**）。
+///
+/// ⚠️ 为什么必须能重复调用：`set_resizable` 会让 TAO 重新套用窗口样式
+/// （WindowFlags::apply_diff → to_window_styles），**把 WS_CAPTION 又加回来** ——
+/// 而前端 useFocusWindowSize 在切模式时会调三次 setResizable，
+/// 于是刚剥掉的标题栏立刻长回来，顶部又能拖动（用户实测就是这个现象）。
+/// 所以：模式切换、启动、以及前端收尾，都要再调一次这个函数，
+/// 保证「锁定」永远是最后落地的那一方。
+fn apply_window_lock_effects<R: Runtime>(app: &AppHandle<R>) {
+    let locked = read_window_locked(app);
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_resizable(!locked);
+        set_window_frame_styles(&w, locked);
+    }
+}
+
+/// 供前端在改完窗口尺寸限制（setResizable）之后调用：再收敛一次锁定状态。
+///
+/// 顺序很关键：前端那几次 setResizable 会把标题栏样式带回来，
+/// 必须由这个命令在它们之后把样式重新剥掉，否则「不能移动」就失效。
+#[tauri::command]
+fn refresh_window_lock<R: Runtime>(app: AppHandle<R>) {
+    apply_window_lock_effects(&app);
+}
+
 /// 锁定 / 解锁窗口。
 ///
 /// 「锁定」的含义（按用户要求）：**不能移动、不能改变窗口大小**，
@@ -601,13 +628,7 @@ fn quit_app<R: Runtime>(app: AppHandle<R>) {
 /// 完全绕过 WebView。所以锁定时要连这些边框样式一起剥掉（见 set_window_frame_styles）。
 fn apply_window_lock<R: Runtime>(app: &AppHandle<R>, locked: bool) -> Result<(), String> {
     write_setting_bool(app, "windowLocked", locked)?;
-    if let Some(w) = app.get_webview_window("main") {
-        // 一、不能改变大小
-        w.set_resizable(!locked)
-            .map_err(|e| format!("锁定窗口大小失败: {e}"))?;
-        // 二、不能移动：剥掉标题栏样式（拖不动），同时保证不出现可见边框
-        set_window_frame_styles(&w, locked);
-    }
+    apply_window_lock_effects(app);
     rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
     app.emit(
         SETTINGS_UPDATED_EVENT,
@@ -1134,6 +1155,8 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+    // show() 同样会让 TAO 重套窗口样式（把 WS_CAPTION 带回来），显示后再收敛一次
+    apply_window_lock_effects(app);
 }
 
 fn toggle_main_window<R: Runtime>(app: &AppHandle<R>) {
@@ -1155,6 +1178,8 @@ fn toggle_main_window<R: Runtime>(app: &AppHandle<R>) {
             }
         }
     }
+    // 与 show_main_window 同理：隐显之后要重新收敛锁定状态
+    apply_window_lock_effects(app);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1165,6 +1190,7 @@ pub fn run() {
             hide_main_window,
             set_focus_mode,
             set_window_locked,
+            refresh_window_lock,
             set_mouse_passthrough,
             quit_app,
             update_shortcuts,
