@@ -1470,8 +1470,20 @@ pub fn run() {
             // 启动时自动拉取一次远端（多设备：每次打开轻签就能拿到别的设备的改动）
             webdav::startup_pull(app.handle());
 
-            // 贴边隐藏轮询（类似 QQ；设置关闭时什么都不做）
-            start_edge_hide_poll(app.handle());
+            /*
+              贴边隐藏改由**前端**实现（见 WidgetShell 的 edgeHide effect）。
+
+              Rust 这套「每 160ms 读一次数据库 + 轮询全局光标 + set_position」
+              依赖环节太多：任一环失败（数据库读失败、current_monitor 返回 None、
+              位置设置被拒……）就整体静默失效，而且日志在 stderr 里用户看不到，
+              排查成本极高（实测就是"完全没反应"）。
+
+              前端只需要窗口自身坐标与鼠标进出事件即可：
+              隐藏时还有 4px 露在屏幕内，鼠标进入它同样触发 mouseenter，
+              所以「碰边缘滑回来」根本不需要读全局光标。
+              保留下面这套代码备查，不再调用。
+            */
+            // start_edge_hide_poll(app.handle());
 
             // 全局快捷键：从设置中读取配置并注册
             if let Err(e) = register_all_shortcuts(app.handle()) {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
+import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import {
   DndContext,
   DragOverlay,
@@ -258,6 +259,157 @@ export function WidgetShell() {
     }, 2500);
     return () => window.clearTimeout(timer);
   }, [todos, webdavEnabled, settingsInitialized]);
+
+  /**
+   * 贴边隐藏（类似 QQ）—— 前端实现。
+   *
+   *   · 吸附：窗口移动停下来后，若贴近屏幕左/右边缘就贴上去
+   *   · 隐藏：鼠标离开窗口约 0.5 秒后滑出，只在屏幕内留 PEEK 像素
+   *   · 显示：鼠标进入窗口（也就是碰到那 PEEK 像素）立即滑回来
+   *
+   * 为什么不用 Rust 轮询全局光标：那条路要「每拍读数据库 + GetCursorPos +
+   * set_position」全部成功才有效，任一环失败就整体静默失效且看不到日志。
+   * 这里只用窗口自身坐标和鼠标进出事件 —— 隐藏后仍有 4px 露在屏幕内，
+   * 鼠标进入它同样会触发 mouseenter，所以不需要读全局光标。
+   */
+  useEffect(() => {
+    if (!settingsInitialized || !edgeHide || focusMode) return;
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+
+    const win = getCurrentWindow();
+    /** 隐藏时露在屏幕内的宽度（px） */
+    const PEEK = 4;
+    /** 贴近屏幕边缘多少像素内就吸附 */
+    const SNAP = 24;
+    /** 鼠标离开多久后滑出（毫秒） */
+    const HIDE_DELAY = 500;
+    /** 拖动结束多久后再吸附，避免和拖动过程打架 */
+    const SNAP_DELAY = 260;
+
+    let dock: "left" | "right" | null = null;
+    let sliding = false;
+    let hideTimer: number | null = null;
+    let snapTimer: number | null = null;
+    let cancelled = false;
+
+    /** 读出当前需要的几何信息（全部是物理像素） */
+    const measure = async () => {
+      const mon = await currentMonitor();
+      const pos = await win.outerPosition();
+      const size = await win.outerSize();
+      if (!mon) return null;
+      const monLeft = mon.position.x;
+      const monRight = monLeft + mon.size.width;
+      return {
+        monLeft,
+        monRight,
+        w: size.width,
+        x: pos.x,
+        y: pos.y,
+        leftFlush: monLeft,
+        rightFlush: monRight - size.width,
+        leftHidden: monLeft - size.width + PEEK,
+        rightHidden: monRight - PEEK,
+      };
+    };
+
+    /** 贴近边缘就吸附（并记住停靠在哪一边） */
+    const trySnap = async () => {
+      if (cancelled) return;
+      const m = await measure();
+      if (!m || cancelled) return;
+      if (Math.abs(m.x - m.leftFlush) <= SNAP) {
+        dock = "left";
+        if (m.x !== m.leftFlush) {
+          await win.setPosition(new PhysicalPosition(m.leftFlush, m.y));
+        }
+      } else if (Math.abs(m.x - m.rightFlush) <= SNAP) {
+        dock = "right";
+        if (m.x !== m.rightFlush) {
+          await win.setPosition(new PhysicalPosition(m.rightFlush, m.y));
+        }
+      } else {
+        dock = null;
+      }
+    };
+
+    /** 滑出屏幕（只留 PEEK） */
+    const slideOut = async () => {
+      if (cancelled || sliding || !dock) return;
+      const m = await measure();
+      if (!m || !dock || cancelled) return;
+      sliding = true;
+      const x = dock === "left" ? m.leftHidden : m.rightHidden;
+      try {
+        await win.setPosition(new PhysicalPosition(x, m.y));
+      } catch (e) {
+        console.warn("[LiteNote] 贴边隐藏失败:", e);
+      } finally {
+        sliding = false;
+      }
+    };
+
+    /** 滑回屏幕 */
+    const slideIn = async () => {
+      if (cancelled || sliding || !dock) return;
+      const m = await measure();
+      if (!m || !dock || cancelled) return;
+      sliding = true;
+      const x = dock === "left" ? m.leftFlush : m.rightFlush;
+      try {
+        await win.setPosition(new PhysicalPosition(x, m.y));
+      } catch (e) {
+        console.warn("[LiteNote] 贴边显示失败:", e);
+      } finally {
+        sliding = false;
+      }
+    };
+
+    const clearHideTimer = () => {
+      if (hideTimer !== null) {
+        window.clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+    };
+
+    // 鼠标进窗口 → 立刻滑回
+    const onEnter = () => {
+      clearHideTimer();
+      if (dock) void slideIn();
+    };
+    // 鼠标离开窗口 → 稍等一下再滑出（给"只是划过"留余地）
+    const onLeave = () => {
+      clearHideTimer();
+      if (!dock) return;
+      hideTimer = window.setTimeout(() => {
+        hideTimer = null;
+        void slideOut();
+      }, HIDE_DELAY);
+    };
+
+    // 窗口被移动 → 停下之后再判断要不要吸附
+    const unlistenPromise = win.onMoved(() => {
+      if (snapTimer !== null) window.clearTimeout(snapTimer);
+      snapTimer = window.setTimeout(() => {
+        snapTimer = null;
+        dock = null;
+        void trySnap();
+      }, SNAP_DELAY);
+    });
+
+    document.addEventListener("mouseenter", onEnter);
+    document.addEventListener("mouseleave", onLeave);
+    void trySnap();
+
+    return () => {
+      cancelled = true;
+      clearHideTimer();
+      if (snapTimer !== null) window.clearTimeout(snapTimer);
+      document.removeEventListener("mouseenter", onEnter);
+      document.removeEventListener("mouseleave", onLeave);
+      void unlistenPromise.then((un) => un()).catch(() => {});
+    };
+  }, [settingsInitialized, edgeHide, focusMode]);
 
   /**
    * 专注模式：右键**任意位置**弹出应用自己的菜单（隐藏界面 / 完整模式 / 退出）。
@@ -574,6 +726,7 @@ export function WidgetShell() {
             }
             onSelect={handleSelect}
             onStartEdit={handleStartEdit}
+            onStartSort={handleStartSort}
             onContextMenu={handleContextMenu}
             onChangeText={updateTodoText}
             onEndEdit={handleEndEdit}

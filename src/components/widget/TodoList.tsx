@@ -28,6 +28,8 @@ interface TodoListProps {
   onSelect: (id: string) => void;
   /** 双击进入编辑 */
   onStartEdit?: (id: string) => void;
+  /** 长按进入排序模式 */
+  onStartSort?: () => void;
   /** 排序模式：整行可拖动排序 */
   sorting?: boolean;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
@@ -47,6 +49,7 @@ export function TodoList({
   selectedDate = null,
   onSelect,
   onStartEdit,
+  onStartSort,
   onContextMenu,
   onChangeText,
   onEndEdit,
@@ -93,6 +96,7 @@ export function TodoList({
         sorting={sorting}
         onSelect={() => onSelect(todo.id)}
         onStartEdit={onStartEdit ? () => onStartEdit(todo.id) : undefined}
+        onStartSort={onStartSort}
         onContextMenu={(e) => onContextMenu(e, todo.id)}
         onChangeText={(text) => onChangeText(todo.id, text)}
         onEndEdit={onEndEdit}

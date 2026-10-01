@@ -80,6 +80,8 @@ interface TodoRowProps {
   onSelect: () => void;
   /** 双击进入编辑（可选：专注模式只读，不传即可） */
   onStartEdit?: () => void;
+  /** 长按进入排序模式（iOS 那种"按住开始抖动"） */
+  onStartSort?: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onChangeText: (text: string) => void;
   onEndEdit: () => void;
@@ -207,6 +209,7 @@ function ManagementTodoRow({
   editing,
   onSelect,
   onStartEdit,
+  onStartSort,
   onContextMenu,
   onChangeText,
   onEndEdit,
@@ -218,6 +221,41 @@ function ManagementTodoRow({
   // 用同一档的纯色变量，空心圆也能有可见的前景色
   const accent = TODO_COLOR_CSS_VAR[todo.colorId];
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  /*
+    长按进入排序模式（iOS 那种"按住开始抖动"）。
+    放在正文按钮上而不是整行上：整行铺了 dnd-kit 的 pointer 监听，
+    再挂自己的 onPointerDown 会把它覆盖掉，拖动就没了。
+    长按触发后要把紧随其后的 click 吞掉，否则会顺带选中/进编辑。
+  */
+  const LONG_PRESS_MS = 520;
+  const pressTimer = useRef<number | null>(null);
+  const longPressed = useRef(false);
+
+  const cancelPress = () => {
+    if (pressTimer.current !== null) {
+      window.clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+  };
+
+  const handlePressStart = () => {
+    if (sorting || !onStartSort) return;
+    cancelPress();
+    pressTimer.current = window.setTimeout(() => {
+      pressTimer.current = null;
+      longPressed.current = true;
+      onStartSort();
+    }, LONG_PRESS_MS);
+  };
+
+  const handleTextClick = () => {
+    if (longPressed.current) {
+      longPressed.current = false;
+      return;
+    }
+    onSelect();
+  };
 
   // 只有在「排序模式」里才允许拖动 —— 平时整行可拖会和单击选中 / 双击编辑打架
   const sortable = useSortable({
@@ -387,8 +425,11 @@ function ManagementTodoRow({
           // 排序模式：iOS 那种轻微抖动，提示"这一项现在可以拖"
           (sorting ? " ln-jiggle" : "")
         }
-        onClick={onSelect}
+        onClick={handleTextClick}
         onDoubleClick={onStartEdit}
+        onPointerDown={handlePressStart}
+        onPointerUp={cancelPress}
+        onPointerLeave={cancelPress}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
