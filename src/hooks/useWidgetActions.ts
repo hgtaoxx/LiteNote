@@ -61,7 +61,31 @@ export function useWidgetActions(locale: Locale) {
     }
   }, [addTodo, setTodoDueDate]);
 
+  /**
+   * 排序模式：从右键菜单「排序」进入，进去后可上下拖动待办调整顺序。
+   * 平时不允许拖动整行 —— 否则会和单击选中 / 双击编辑冲突。
+   */
+  const [sorting, setSorting] = useState(false);
+
+  const handleStartSort = useCallback(() => {
+    setMenu(null);
+    setSelectedId(null);
+    setEditingId(null);
+    setSorting(true);
+  }, []);
+
+  const handleEndSort = useCallback(() => setSorting(false), []);
+
+  /**
+   * 单击：只选中，不再直接进编辑。
+   * 按用户要求改成「双击才进编辑」，否则想选中看看或拖拽排序时很容易误进编辑态。
+   */
   const handleSelect = useCallback((id: string) => {
+    setSelectedId(id);
+  }, []);
+
+  /** 双击：进入编辑态 */
+  const handleStartEdit = useCallback((id: string) => {
     setSelectedId(id);
     setEditingId(id);
   }, []);
@@ -167,6 +191,9 @@ export function useWidgetActions(locale: Locale) {
     // UI 状态
     selectedId,
     handleCloseMenu,
+    sorting,
+    handleStartSort,
+    handleEndSort,
     editingId,
     menu,
     confirmClear,
@@ -181,6 +208,7 @@ export function useWidgetActions(locale: Locale) {
     // 操作
     handleAdd,
     handleSelect,
+    handleStartEdit,
     handleContextMenu,
     handleEndEdit,
     handleClearCompleted,

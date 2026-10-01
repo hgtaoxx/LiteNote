@@ -44,6 +44,8 @@ export const DEFAULT_SETTINGS = {
    */
   windowLocked: false,
   autoStart: true,
+  /** 贴边隐藏：窗口贴近屏幕左右边缘时自动吸附，鼠标离开后滑出只留一条窄边 */
+  edgeHide: false,
   theme: "glass" as ThemeId,
   reminderMode: "popup" as "popup" | "system",
   focusMode: false,
@@ -78,6 +80,7 @@ export interface AppSettings {
   readonly localeMode: LocaleMode;
   readonly windowLocked: boolean;
   readonly autoStart: boolean;
+  readonly edgeHide: boolean;
   readonly theme: ThemeId;
   readonly reminderMode: "popup" | "system";
   readonly focusMode: boolean;

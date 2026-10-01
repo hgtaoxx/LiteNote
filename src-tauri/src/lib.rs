@@ -1203,6 +1203,137 @@ fn toggle_main_window<R: Runtime>(app: &AppHandle<R>) {
     apply_window_lock_effects(app);
 }
 
+/* ──────────────── 贴边隐藏（类似 QQ） ────────────────
+   窗口贴近屏幕左/右边缘时自动吸附；鼠标离开窗口约 0.5 秒后滑出屏幕，
+   只留下 EDGE_PEEK 像素宽的一条；鼠标碰到这条窄边再滑回来。
+   四个常量都可以按手感调整。
+   ─────────────────────────────────────────────────── */
+
+/// 隐藏时露在屏幕内的宽度（px）
+const EDGE_PEEK: i32 = 4;
+/// 距屏幕边缘多少像素内自动吸附
+const EDGE_SNAP: i32 = 28;
+/// 连续多少拍「鼠标不在窗口上」才滑出去（160ms 一拍 → 约 0.5 秒）
+const EDGE_HIDE_TICKS: u32 = 3;
+/// 轮询间隔（毫秒）
+const EDGE_POLL_MS: u64 = 160;
+
+#[cfg(windows)]
+fn cursor_pos() -> Option<(i32, i32)> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut p = POINT { x: 0, y: 0 };
+    let ok = unsafe { GetCursorPos(&mut p) };
+    if ok == 0 {
+        None
+    } else {
+        Some((p.x, p.y))
+    }
+}
+
+#[cfg(not(windows))]
+fn cursor_pos() -> Option<(i32, i32)> {
+    None
+}
+
+/// 启动贴边隐藏轮询（设置关闭时什么都不做）
+fn start_edge_hide_poll<R: Runtime>(app: &AppHandle<R>) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(EDGE_POLL_MS));
+        // 停靠边：0 = 未停靠，-1 = 左，1 = 右
+        let mut dock: i32 = 0;
+        // 已显示状态下，鼠标连续不在窗口上的拍数
+        let mut outside_ticks: u32 = 0;
+
+        loop {
+            interval.tick().await;
+
+            if !read_setting_bool_app(&handle, "edgeHide", false) {
+                dock = 0;
+                outside_ticks = 0;
+                continue;
+            }
+            let Some(w) = handle.get_webview_window("main") else {
+                continue;
+            };
+            let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) else {
+                continue;
+            };
+            let Ok(Some(mon)) = w.current_monitor() else {
+                continue;
+            };
+            let Some((cx, cy)) = cursor_pos() else {
+                continue;
+            };
+
+            let mx = mon.position().x;
+            let mw = mon.size().width as i32;
+            let (wx, wy) = (pos.x, pos.y);
+            let (ww, wh) = (size.width as i32, size.height as i32);
+
+            // ── 未停靠：贴近屏幕左/右边缘就吸附上去 ──
+            if dock == 0 {
+                if wx <= mx + EDGE_SNAP && wx >= mx - EDGE_SNAP {
+                    dock = -1;
+                    outside_ticks = 0;
+                    if wx != mx {
+                        let _ = w.set_position(tauri::PhysicalPosition::new(mx, wy));
+                    }
+                } else if wx + ww >= mx + mw - EDGE_SNAP && wx + ww <= mx + mw + EDGE_SNAP {
+                    dock = 1;
+                    outside_ticks = 0;
+                    let target = mx + mw - ww;
+                    if wx != target {
+                        let _ = w.set_position(tauri::PhysicalPosition::new(target, wy));
+                    }
+                }
+                continue;
+            }
+
+            // ── 已停靠 ──
+            let shown_x = if dock == -1 { mx } else { mx + mw - ww };
+            let hidden_x = if dock == -1 {
+                mx - ww + EDGE_PEEK
+            } else {
+                mx + mw - EDGE_PEEK
+            };
+            let is_hidden = (wx - hidden_x).abs() <= 2;
+            let over_window = cx >= wx && cx <= wx + ww && cy >= wy && cy <= wy + wh;
+
+            // 用户把窗口拖离了停靠位 → 解除停靠
+            if !is_hidden && (wx - shown_x).abs() > 10 {
+                dock = 0;
+                outside_ticks = 0;
+                continue;
+            }
+
+            if is_hidden {
+                // 鼠标碰到露出的那条窄边 → 滑回来
+                let hit_strip = cy >= wy
+                    && cy <= wy + wh
+                    && if dock == -1 {
+                        cx <= mx + EDGE_PEEK + 1
+                    } else {
+                        cx >= mx + mw - EDGE_PEEK - 1
+                    };
+                if hit_strip {
+                    let _ = w.set_position(tauri::PhysicalPosition::new(shown_x, wy));
+                }
+            } else if over_window {
+                outside_ticks = 0;
+            } else {
+                outside_ticks += 1;
+                if outside_ticks >= EDGE_HIDE_TICKS {
+                    outside_ticks = 0;
+                    let _ = w.set_position(tauri::PhysicalPosition::new(hidden_x, wy));
+                }
+            }
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1338,6 +1469,9 @@ pub fn run() {
 
             // 启动时自动拉取一次远端（多设备：每次打开轻签就能拿到别的设备的改动）
             webdav::startup_pull(app.handle());
+
+            // 贴边隐藏轮询（类似 QQ；设置关闭时什么都不做）
+            start_edge_hide_poll(app.handle());
 
             // 全局快捷键：从设置中读取配置并注册
             if let Err(e) = register_all_shortcuts(app.handle()) {

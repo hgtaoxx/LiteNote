@@ -28,6 +28,8 @@ export interface SettingsState {
   localeMode: LocaleMode;
   windowLocked: boolean;
   autoStart: boolean;
+  /** 贴边隐藏（类似 QQ） */
+  edgeHide: boolean;
   /** WebDAV 同步开关（用于内容变化后的自动同步判断；实际同步在 Rust 侧执行） */
   webdavEnabled: boolean;
   theme: ThemeId;
@@ -56,6 +58,7 @@ export interface SettingsActions {
   setContentFontSize: (v: number) => void;
   setContentFontFamily: (v: ContentFontId) => void;
   setAutoStart: (v: boolean) => void;
+  setEdgeHide: (v: boolean) => void;
   setTheme: (t: ThemeId) => void;
   setReminderMode: (m: "popup" | "system") => void;
   setFocusMode: (v: boolean) => void;
@@ -208,6 +211,17 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
       dbWrite(
         saveSetting("autoStart", v),
         "saveSetting(autoStart)",
+        (msg) => set({ lastError: msg }),
+        emitSettingsChanged,
+      );
+    },
+
+    setEdgeHide: (v) => {
+      set({ edgeHide: v });
+      // 实际动作在 Rust 侧的贴边隐藏轮询里（读同一个设置键）
+      dbWrite(
+        saveSetting("edgeHide", v),
+        "saveSetting(edgeHide)",
         (msg) => set({ lastError: msg }),
         emitSettingsChanged,
       );

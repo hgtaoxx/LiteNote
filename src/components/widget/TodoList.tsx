@@ -26,6 +26,10 @@ interface TodoListProps {
   /** 周日历选中日期（null 表示不筛选）；已完成视图按 completedTime 落在当天叠加过滤 */
   selectedDate?: number | null;
   onSelect: (id: string) => void;
+  /** 双击进入编辑 */
+  onStartEdit?: (id: string) => void;
+  /** 排序模式：整行可拖动排序 */
+  sorting?: boolean;
   onContextMenu: (e: React.MouseEvent, id: string) => void;
   onChangeText: (id: string, text: string) => void;
   onEndEdit: () => void;
@@ -42,10 +46,12 @@ export function TodoList({
   todoView = "active",
   selectedDate = null,
   onSelect,
+  onStartEdit,
   onContextMenu,
   onChangeText,
   onEndEdit,
   onToggleCompleted,
+  sorting = false,
 }: TodoListProps) {
   const { activeSorted, completedSorted, activeIds, completedBuckets } = useMemo(() => {
     const active = todos.filter((x) => !x.completed);
@@ -84,7 +90,9 @@ export function TodoList({
         focusMode={focusMode}
         selected={todo.id === selectedId}
         editing={todo.id === editingId}
+        sorting={sorting}
         onSelect={() => onSelect(todo.id)}
+        onStartEdit={onStartEdit ? () => onStartEdit(todo.id) : undefined}
         onContextMenu={(e) => onContextMenu(e, todo.id)}
         onChangeText={(text) => onChangeText(todo.id, text)}
         onEndEdit={onEndEdit}

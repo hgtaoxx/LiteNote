@@ -72,6 +72,8 @@ export function WidgetShell() {
   const setWeekCalendarCollapsed = useSettingsStore((s) => s.setWeekCalendarCollapsed);
   const autoStart = useSettingsStore((s) => s.autoStart);
   const setAutoStart = useSettingsStore((s) => s.setAutoStart);
+  const edgeHide = useSettingsStore((s) => s.edgeHide);
+  const setEdgeHide = useSettingsStore((s) => s.setEdgeHide);
   const theme = useSettingsStore((s) => s.theme);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const reminderMode = useSettingsStore((s) => s.reminderMode);
@@ -164,6 +166,10 @@ export function WidgetShell() {
     setConfirmDeleteId,
     handleAdd,
     handleSelect,
+    handleStartEdit,
+    sorting,
+    handleStartSort,
+    handleEndSort,
     handleContextMenu,
     handleEndEdit,
     handleClearCompleted,
@@ -529,10 +535,34 @@ export function WidgetShell() {
             </div>
           </div>
 
+          {/* 排序模式提示条：提示可拖动 + 「完成」退出（iOS 排序那套交互） */}
+          {sorting ? (
+            <div
+              className="flex shrink-0 items-center justify-between px-3 py-1"
+              style={{
+                background: "var(--ln-theme-surface-active)",
+                borderBottom: "1px solid var(--ln-theme-border)",
+              }}
+            >
+              <span className="text-xs" style={{ color: "var(--ln-theme-text-secondary)" }}>
+                {t(locale, "sortHint")}
+              </span>
+              <button
+                type="button"
+                onClick={handleEndSort}
+                className="rounded-md px-2 py-0.5 text-xs font-medium transition"
+                style={{ background: "var(--ln-theme-surface)", color: "var(--ln-theme-text)" }}
+              >
+                {t(locale, "sortDone")}
+              </button>
+            </div>
+          ) : null}
+
           <TodoList
             locale={locale}
             todos={filteredTodos}
             todoView={todoView}
+            sorting={sorting}
             selectedId={selectedId}
             editingId={editingId}
             emptyHint={
@@ -543,6 +573,7 @@ export function WidgetShell() {
                 : t(locale, "emptyHint")
             }
             onSelect={handleSelect}
+            onStartEdit={handleStartEdit}
             onContextMenu={handleContextMenu}
             onChangeText={updateTodoText}
             onEndEdit={handleEndEdit}
@@ -582,6 +613,8 @@ export function WidgetShell() {
           onSetWeekCalendarCollapsed={setWeekCalendarCollapsed}
           autoStart={autoStart}
           onSetAutoStart={setAutoStart}
+          edgeHide={edgeHide}
+          onSetEdgeHide={setEdgeHide}
           theme={theme}
           onSetTheme={setTheme}
           reminderMode={reminderMode}
@@ -607,6 +640,7 @@ export function WidgetShell() {
           isRecurring={menuTodo.isRecurring}
           onClose={handleCloseMenu}
           onPin={menuActions.onPin}
+          onStartSort={handleStartSort}
           onDelete={menuActions.onDelete}
           onToggleDone={menuActions.onToggleDone}
           onPickColor={(c: TodoColorId) => menuActions.onPickColor(c)}

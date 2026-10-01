@@ -75,7 +75,11 @@ interface TodoRowProps {
   editing: boolean;
   /** 专注模式：仅展示 + 勾选，无编辑/拖拽/右键 */
   focusMode?: boolean;
+  /** 排序模式：整行可上下拖动，并带 iOS 那种"抖动"提示 */
+  sorting?: boolean;
   onSelect: () => void;
+  /** 双击进入编辑（可选：专注模式只读，不传即可） */
+  onStartEdit?: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onChangeText: (text: string) => void;
   onEndEdit: () => void;
@@ -202,10 +206,12 @@ function ManagementTodoRow({
   selected,
   editing,
   onSelect,
+  onStartEdit,
   onContextMenu,
   onChangeText,
   onEndEdit,
   onToggleCompleted,
+  sorting = false,
 }: Omit<TodoRowProps, "focusMode">) {
   const dotStyle = COLOR_DOT_STYLE[todo.colorId];
   // 角标 / 勾号的前景色：不能取 dotStyle.background（hollow 是 transparent），
@@ -213,10 +219,10 @@ function ManagementTodoRow({
   const accent = TODO_COLOR_CSS_VAR[todo.colorId];
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 仅未完成且非编辑态的待办可拖拽
+  // 只有在「排序模式」里才允许拖动 —— 平时整行可拖会和单击选中 / 双击编辑打架
   const sortable = useSortable({
     id: todo.id,
-    disabled: todo.completed || editing,
+    disabled: !sorting || todo.completed,
     data: { type: "todo" as const },
   });
 
@@ -376,8 +382,13 @@ function ManagementTodoRow({
       <button
         type="button"
         data-tauri-no-drag
-        className="flex min-w-0 flex-1 items-center text-left cursor-pointer bg-transparent border-0"
+        className={
+          "flex min-w-0 flex-1 items-center text-left cursor-pointer bg-transparent border-0" +
+          // 排序模式：iOS 那种轻微抖动，提示"这一项现在可以拖"
+          (sorting ? " ln-jiggle" : "")
+        }
         onClick={onSelect}
+        onDoubleClick={onStartEdit}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();

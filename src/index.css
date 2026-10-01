@@ -1,7 +1,22 @@
 @import "tailwindcss";
 @import "./styles/litenote-tokens.css";
 
-/* 窗口圆角：与 --ln-radius-window 一致，裁剪 WebView */
+/* 排序模式：iOS 那种轻微抖动，提示「这一项现在可以拖」。
+   注意只作用在行内元素（正文按钮）上 —— 行本身由 dnd-kit 用 transform 控制位置，
+   若把动画加在行上会覆盖它的 transform，导致其它行不跟着让位。 */
+@keyframes ln-jiggle {
+  0%,
+  100% {
+    transform: rotate(-0.45deg);
+  }
+  50% {
+    transform: rotate(0.45deg);
+  }
+}
+
+.ln-jiggle {
+  animation: ln-jiggle 0.3s ease-in-out infinite;
+}
 html,
 body,
 #root {

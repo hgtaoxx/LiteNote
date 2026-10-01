@@ -31,6 +31,9 @@ interface SettingsModalProps {
   onSetWeekCalendarCollapsed: (v: boolean) => void;
   autoStart: boolean;
   onSetAutoStart: (v: boolean) => void;
+  /** 贴边隐藏（类似 QQ） */
+  edgeHide: boolean;
+  onSetEdgeHide: (v: boolean) => void;
   theme: ThemeId;
   onSetTheme: (t: ThemeId) => void;
   reminderMode: "popup" | "system";
@@ -894,6 +897,8 @@ export function SettingsModal({
   onSetWeekCalendarCollapsed,
   autoStart,
   onSetAutoStart,
+  edgeHide,
+  onSetEdgeHide,
   theme,
   onSetTheme,
   reminderMode,
@@ -1048,6 +1053,12 @@ export function SettingsModal({
             checked={autoStart}
             onChange={onSetAutoStart}
             label={mk("autoStart")}
+          />
+          {/* 贴边隐藏：按用户要求放在「开机启动」下方 */}
+          <Switch
+            checked={edgeHide}
+            onChange={onSetEdgeHide}
+            label={mk("edgeHide")}
           />
         </section>
 

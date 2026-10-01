@@ -34,6 +34,8 @@ interface TodoContextMenuProps {
   isRecurring: boolean;
   onClose: () => void;
   onPin: () => void;
+  /** 进入「排序」模式（拖动待办上下排序） */
+  onStartSort: () => void;
   onDelete: () => void;
   onToggleDone: () => void;
   onPickColor: (c: TodoColorId) => void;
@@ -55,6 +57,7 @@ export function TodoContextMenu({
   isRecurring,
   onClose,
   onPin,
+  onStartSort,
   onDelete,
   onToggleDone,
   onPickColor,
@@ -119,6 +122,22 @@ export function TodoContextMenu({
         >
           <span aria-hidden>↑</span>
           {mk(pinned ? "menuUnpin" : "menuPin")}
+        </button>
+      ) : null}
+
+      {/* 排序：紧跟在「置顶」下方（用户指定位置）—— 进入后可上下拖动待办 */}
+      {!completed ? (
+        <button
+          type="button"
+          className={item}
+          role="menuitem"
+          onClick={() => {
+            onStartSort();
+            onClose();
+          }}
+        >
+          <span aria-hidden>⇅</span>
+          {mk("menuSort")}
         </button>
       ) : null}
 
