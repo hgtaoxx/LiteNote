@@ -104,7 +104,7 @@ button {
   注：这里原本有一条规则
       [data-tauri-drag-region].ln-no-drag-handle { -webkit-app-region: no-drag; }
   用来"禁止拖拽"，但 -webkit-app-region 是 **Electron** 的 API，Tauri 完全不认，
-  所以它从未生效 —— 这正是「专注 + 穿透」时窗口仍然能被拖动的原因。
+  所以它从未生效 —— 这正是「专注 + 锁定」时窗口仍然能被拖动的原因。
   正确做法是不渲染 data-tauri-drag-region 属性本身，见 FocusDragHandle.tsx。
 */
 

@@ -9,11 +9,14 @@ interface HeaderBarProps {
   /** 窗口锁定态：锁定后不能移动、不能改大小，其余操作照常 */
   windowLocked: boolean;
   onToggleWindowLock: () => void;
-  /** 鼠标穿透是否已开启（开启后界面点不到，只能从托盘关闭） */
-  mousePassthrough: boolean;
-  /** 开启鼠标穿透（只用于开启，关闭走托盘） */
-  onEnableMousePassthrough: () => void;
-  /** 切换专注模式（按钮置于「鼠标穿透」左侧） */
+  /** 钉桌面设置是否开启（按钮该不该亮） */
+  desktopPin: boolean;
+  /** 是否**真的**挂在桌面层：停靠期间只是挂起，这时按钮置灰 */
+  pinApplied: boolean;
+  /** 钉桌面此刻不可用（贴边停靠中） */
+  pinUnavailable: boolean;
+  onToggleDesktopPin: () => void;
+  /** 切换专注模式 */
   onEnterFocus: () => void;
   onOpenSettings: () => void;
   /** 隐藏到托盘（标题栏不再有右键菜单，按钮恢复） */
@@ -23,28 +26,35 @@ interface HeaderBarProps {
 const iconBtn =
   "flex h-6 w-6 shrink-0 items-center justify-center rounded-lg transition hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-100/50";
 const iconStyle = { color: "var(--ln-theme-text)" } as React.CSSProperties;
-/**
- * 穿透已开启时的高亮样式。
- * 之前按钮在开 / 关两种状态下外观完全一样，用户点了之后无法确认是否生效；
- * 专注模式下穿透不真穿透（只是锁定窗口），更需要这个可视反馈。
- */
+/** 生效中的高亮（琥珀色）：钉住 / 锁定这类「从外观不容易看出来」的状态都需要它 */
 const iconOnStyle = {
   color: "#fbbf24",
   background: "rgba(251, 191, 36, 0.18)",
 } as React.CSSProperties;
+/** 置灰：设置是开的，但当前被挂起（贴边停靠中） */
+const iconDimStyle = { color: "var(--ln-theme-text-muted)", opacity: 0.5 } as React.CSSProperties;
 
 export function HeaderBar({
   locale,
   windowLocked,
   onToggleWindowLock,
-  mousePassthrough,
-  onEnableMousePassthrough,
+  desktopPin,
+  pinApplied,
+  pinUnavailable,
+  onToggleDesktopPin,
   onEnterFocus,
   onOpenSettings,
   onHide,
 }: HeaderBarProps) {
   const mk = (key: MessageKey) => t(locale, key);
   const [version, setVersion] = useState("");
+
+  /**
+   * 能不能用原生拖拽：锁定态禁止。钉在桌面层时不需要在这里另设条件 ——
+   * 那时整个窗口都不再接鼠标事件了（Rust 侧挂上前打上了穿透位），
+   * 要挪位置先用托盘「钉桌面」取消。
+   */
+  const canNativeDrag = !windowLocked;
 
   useEffect(() => {
     getVersion()
@@ -61,12 +71,12 @@ export function HeaderBar({
         (windowLocked ? "cursor-default" : "cursor-grab active:cursor-grabbing")
       }
       style={{ borderBottom: `1px solid var(--ln-theme-header-border)` }}
-      /* 锁定时显式置为 "false"（Tauri 的显式禁止值），整条顶栏都不再能拖动窗口 */
-      data-tauri-drag-region={windowLocked ? "false" : "true"}
+      /* 不能拖时显式置为 "false"（Tauri 的显式禁止值），整条顶栏都不再能拖动窗口 */
+      data-tauri-drag-region={canNativeDrag ? "true" : "false"}
     >
       <div
         className="flex min-h-0 min-w-0 flex-1 items-center gap-1.5 self-stretch pl-2 pr-2"
-        data-tauri-drag-region={windowLocked ? "false" : "true"}
+        data-tauri-drag-region={canNativeDrag ? "true" : "false"}
       >
         <span className="truncate text-sm font-semibold leading-none" style={{ color: "var(--ln-theme-text)" }}>
           {mk("appName")}
@@ -79,7 +89,7 @@ export function HeaderBar({
         className="flex cursor-default items-center gap-0.5 pr-1"
         data-tauri-no-drag
       >
-        {/* 专注模式开关：置于「鼠标穿透」左侧 */}
+        {/* 专注模式开关 */}
         <button
           type="button"
           className={iconBtn}
@@ -99,43 +109,37 @@ export function HeaderBar({
             />
           </svg>
         </button>
-        {/* 鼠标穿透：置于「帮助」左侧；开启后整个界面点不到，只能从托盘关闭 */}
+        {/* 钉桌面：把挂件挂进桌面层，「显示桌面 / Win+D」不再收起它。
+            贴边停靠期间自动挂起（唤出要靠临时置顶，桌面层做不到），这时按钮置灰并写明原因。 */}
         <button
           type="button"
           className={iconBtn}
-          style={mousePassthrough ? iconOnStyle : iconStyle}
-          title={mk(mousePassthrough ? "mousePassthroughOn" : "mousePassthrough")}
-          aria-label={mk("mousePassthrough")}
-          aria-pressed={mousePassthrough}
-          onClick={onEnableMousePassthrough}
+          style={pinApplied ? iconOnStyle : pinUnavailable ? iconDimStyle : iconStyle}
+          title={mk(
+            pinUnavailable
+              ? "desktopPinUnavailable"
+              : pinApplied || desktopPin
+                ? "desktopPinOn"
+                : "desktopPin",
+          )}
+          aria-label={mk("desktopPin")}
+          aria-pressed={pinApplied}
+          disabled={pinUnavailable}
+          onClick={onToggleDesktopPin}
         >
-          <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" aria-hidden>
-            {/* 鼠标本体：未开启穿透时只有它 */}
-            <rect
-              x="6.5"
-              y="3"
-              width="11"
-              height="18"
-              rx="5.5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-            />
-            {/* 左右键分界线 */}
-            <path
-              d="M12 3v5.5"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-            />
-            {/* 开启穿透后才加一道斜杠：鼠标事件穿过窗口 */}
-            {mousePassthrough ? (
-              <path
-                d="M3.5 20.5 20.5 3.5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              />
-            ) : null}
+          {/* 图钉：钉帽 + 针 */}
+          <svg
+            className="h-3.5 w-3.5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M9.2 3.5h5.6l-.7 5.3 3.4 3.2H6.5l3.4-3.2-.7-5.3Z" />
+            <path d="M12 12.2v8.3" />
           </svg>
         </button>
         <button

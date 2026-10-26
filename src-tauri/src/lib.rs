@@ -402,27 +402,11 @@ fn read_window_locked<R: Runtime>(app: &AppHandle<R>) -> bool {
     read_setting_bool(&conn, "windowLocked", false)
 }
 
-/// 鼠标穿透状态：开启后窗口忽略鼠标事件，点击落到下层窗口，只能从托盘关闭
-fn read_mouse_passthrough<R: Runtime>(app: &AppHandle<R>) -> bool {
-    let Some(db_path) = litenote_db_path(app) else {
-        return false;
-    };
-    if !db_path.exists() {
-        return false;
-    }
-    let Ok(conn) = Connection::open(&db_path) else {
-        return false;
-    };
-    read_setting_bool(&conn, "mousePassthrough", false)
-}
-
 fn build_tray_menu<R: Runtime>(
     app: &AppHandle<R>,
     focus_mode: bool,
     window_locked: bool,
-    mouse_passthrough: bool,
-) -> tauri::Result<Menu<R>> {
-    let show_i = MenuItem::with_id(app, "tray_show", "显示窗口", true, None::<&str>)?;
+) -> tauri::Result<Menu<R>> {    let show_i = MenuItem::with_id(app, "tray_show", "显示窗口", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let focus_i = CheckMenuItem::with_id(
         app,
@@ -449,20 +433,20 @@ fn build_tray_menu<R: Runtime>(
         window_locked,
         None::<&str>,
     )?;
-    // 鼠标穿透：开启后窗口点不到，只能从这里关闭。
-    // 专注模式下它不是真穿透（窗口仍需接收鼠标事件才能滚动/勾选），而是"锁定界面"，
-    // 所以标题跟着模式变，避免用户困惑。
-    let passthrough_label = if focus_mode {
-        "界面锁定"
+    // 钉桌面：挂件常驻桌面层，「显示桌面 / Win+D」不再把它最小化。
+    // 停靠期间置灰 —— 贴边隐藏唤出要靠临时置顶，挂在桌面层的子窗口置顶不了。
+    let docked = is_docked();
+    let pin_label = if docked {
+        "钉桌面（贴边停靠时暂不可用）"
     } else {
-        "鼠标穿透"
+        "钉桌面"
     };
-    let passthrough_i = CheckMenuItem::with_id(
+    let pin_i = CheckMenuItem::with_id(
         app,
-        "tray_mouse_passthrough",
-        passthrough_label,
-        true,
-        mouse_passthrough,
+        "tray_desktop_pin",
+        pin_label,
+        !docked,
+        read_desktop_pinned(app),
         None::<&str>,
     )?;
     let sep2 = PredefinedMenuItem::separator(app)?;
@@ -475,7 +459,7 @@ fn build_tray_menu<R: Runtime>(
             &focus_i,
             &manage_i,
             &lock_i,
-            &passthrough_i,
+            &pin_i,
             &sep2,
             &quit_i,
         ],
@@ -485,28 +469,11 @@ fn build_tray_menu<R: Runtime>(
 fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let focus_mode = read_focus_mode(app);
     let window_locked = read_window_locked(app);
-    let mouse_passthrough = read_mouse_passthrough(app);
-    let menu = build_tray_menu(app, focus_mode, window_locked, mouse_passthrough)?;
+    let menu = build_tray_menu(app, focus_mode, window_locked)?;
     if let Some(tray) = app.tray_by_id("litenote-tray") {
         tray.set_menu(Some(menu))?;
     }
     Ok(())
-}
-
-/// 实际生效的鼠标穿透 = 设置开启 **且** 当前是完整模式。
-///
-/// 专注模式下不真穿透：窗口仍需接收鼠标事件，才能上下滚动、勾选完成。
-/// 设置值与托盘勾选状态保持不变，切回完整模式自动恢复。
-///
-/// 放在 Rust 侧统一施加：托盘、快捷键、启动恢复都经过这里，
-/// 且不依赖前端的 window 插件权限。
-fn apply_effective_passthrough<R: Runtime>(app: &AppHandle<R>) {
-    let enabled = read_mouse_passthrough(app) && !read_focus_mode(app);
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_ignore_cursor_events(enabled);
-    }
-    // 切模式时前端也会调 setResizable（会把标题栏样式带回来），这里顺手再收敛一次
-    apply_window_lock_effects(app);
 }
 
 /// 关掉 WebView2 自带的右键菜单。
@@ -555,8 +522,8 @@ fn disable_native_context_menu<R: Runtime>(_app: &AppHandle<R>) {}
 
 fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
     write_setting_bool(app, "focusMode", enabled)?;
-    // 进入专注要临时取消穿透，退出专注要恢复穿透
-    apply_effective_passthrough(app);
+    // 切模式时前端会调 setResizable（会把标题栏样式带回来），这里顺手再收敛一次
+    apply_window_lock_effects(app);
     rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
     app.emit(
         SETTINGS_UPDATED_EVENT,
@@ -568,26 +535,6 @@ fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(),
 
 fn toggle_focus_mode<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     apply_focus_mode(app, !read_focus_mode(app))
-}
-
-/// 鼠标穿透：开启后窗口忽略鼠标事件；因为点不到界面，关闭只能走托盘。
-///
-/// 只负责写设置 + 刷新托盘，真正施加穿透统一由 `apply_effective_passthrough`
-/// 按「设置开启 且 非专注模式」决定——专注模式下要保留滚动与勾选，不能真穿透。
-fn apply_mouse_passthrough<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
-    write_setting_bool(app, "mousePassthrough", enabled)?;
-    apply_effective_passthrough(app);
-    rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
-    app.emit(
-        SETTINGS_UPDATED_EVENT,
-        serde_json::json!({ "ts": now_ms(), "source": "rust" }),
-    )
-    .map_err(|e| format!("通知前端失败: {e}"))?;
-    Ok(())
-}
-
-fn toggle_mouse_passthrough<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    apply_mouse_passthrough(app, !read_mouse_passthrough(app))
 }
 
 /// 退出应用（供界面右键菜单的「退出」使用）。
@@ -680,17 +627,15 @@ fn install_lock_subclass<R: Runtime>(_w: &tauri::WebviewWindow<R>) {}
 /// 只更新一个原子标志，**不碰任何窗口 API** —— 所以不会引发 TAO 重套样式，
 /// 也就不会冒出白条或边框。首次调用时顺便安装拦截。
 fn apply_window_lock_effects<R: Runtime>(app: &AppHandle<R>) {
-    // 两种「锁」都统一走命中测试拦截：
-    //   · 锁定窗口（用户手动开启的开关）
-    //   · 专注 + 鼠标穿透 = 界面锁定
-    //     （原本用 setResizable(false) 实现，但那会触发 TAO 重套样式并重算
-    //      非客户区，把被 WebView 盖住的标题栏露出来 → 顶部白条，所以一并挪过来）
+    // 「锁定」统一走命中测试拦截，不改窗口样式：
+    //   · 原本用 setResizable(false) 实现，但那会触发 TAO 重套样式并重算
+    //     非客户区，把被 WebView 盖住的标题栏露出来 → 顶部白条，所以挪到这里
+    //   · 专注模式的尺寸锁（专注 + 锁定）也归这一个开关管
     let locked = read_window_locked(app);
-    let focus_lock = read_focus_mode(app) && read_mouse_passthrough(app);
     if let Some(w) = app.get_webview_window("main") {
         install_lock_subclass(&w);
     }
-    WINDOW_LOCKED.store(locked || focus_lock, std::sync::atomic::Ordering::Relaxed);
+    WINDOW_LOCKED.store(locked, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// 供前端在改完窗口尺寸限制之后调用（保留为幂等收尾；现在它不碰窗口 API）
@@ -718,6 +663,500 @@ fn apply_window_lock<R: Runtime>(app: &AppHandle<R>, locked: bool) -> Result<(),
 
 fn toggle_window_lock<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     apply_window_lock(app, !read_window_locked(app))
+}
+
+/* ────────────────────────────────────────────────────────────────
+   钉桌面：把挂件挂进桌面层的窗口里（承载 SHELLDLL_DefView 的 WorkerW，没有就 Progman）
+
+   为什么是"挂上去"而不是"剥掉最小化样式"（实机探出来的）：
+     · 挂件的窗口是 WS_VISIBLE|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX + WS_EX_APPWINDOW
+       的顶层窗口，而 Shell 的「显示桌面 / Win+D」正是靠逐个最小化顶层窗口起作用的，
+       所以它会被一起收掉；
+     · TAO 只要发现 WindowFlags 变了就无条件重套样式（见上面「窗口锁定」那一节），
+       "剥掉 → 被加回 → 再剥"是在跟框架打架；
+     · 子窗口不在 Shell 枚举最小化的名单里，挂上桌面层就再也碰不到它。
+   实测这台机器：SHELLDLL_DefView 直接在 Progman 里（16 个 WorkerW 全是空的），
+   而 Progman 的矩形横跨整块虚拟屏（两块屏一整片），所以只挂一次父窗口、
+   按父窗口客户区原点做一次换算就够，挂件压在接缝上也不会被裁成半截。
+
+   代价（用户已确认接受）：
+     · 挂上之后永远在所有普通窗口之下，而且**不能置顶** —— 贴边隐藏的唤出靠临时置顶，
+       所以停靠期间钉桌面自动挂起（见 set_dock_state）；
+     · 钉住期间整个窗口不接鼠标键盘（挂上前先把 WS_EX_TRANSPARENT|WS_EX_LAYERED 打上）
+       —— 它现在是壁纸级的展示物，要挪位置 / 要打字都先用托盘「钉桌面」取消。这也顺手
+       避免了误交互：窗口一旦被抬起就会走顶层语义（HWND_TOPMOST 那类哨兵值），会把
+       子窗口从桌面层悄悄摘出去，而设置里还显示着「已钉住」；
+     · 资源管理器重启会销毁桌面窗口，Windows 对子窗口是级联销毁，救不回来 ——
+       表现为重启 explorer 后挂件消失，需要重开程序。
+   ──────────────────────────────────────────────────────────────── */
+
+/// 钉桌面设置（持久化）。真正挂没挂上以 desktop_pin::is_pinned() 为准，
+/// 停靠期间两者会短暂不一致（设置为开、实际挂起）。
+fn read_desktop_pinned<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let Some(db_path) = litenote_db_path(app) else {
+        return false;
+    };
+    if !db_path.exists() {
+        return false;
+    }
+    let Ok(conn) = Connection::open(&db_path) else {
+        return false;
+    };
+    read_setting_bool(&conn, "desktopPin", false)
+}
+
+/// 贴边隐藏当前是否处于停靠态：由前端每次吸附 / 解除时报过来
+static DOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn is_docked() -> bool {
+    DOCKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(windows)]
+mod desktop_pin {
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use windows_sys::Win32::Foundation::{HWND, RECT};
+    use windows_sys::Win32::Graphics::Gdi::InvalidateRgn;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, EnumWindows, FindWindowW, GetAncestor, GetClassNameW, GetWindowLongW,
+        GetWindowRect, SetParent, SetWindowLongW, SetWindowPos, GA_PARENT, GWL_EXSTYLE,
+        SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    static PINNED: AtomicBool = AtomicBool::new(false);
+    /// 父窗口客户区原点（屏幕坐标）：子窗口的位置要按它换算
+    static PAR_X: AtomicIsize = AtomicIsize::new(0);
+    static PAR_Y: AtomicIsize = AtomicIsize::new(0);
+    /// 当前的父窗口，用来判活（资源管理器重启后就没了）
+    static PARENT: AtomicIsize = AtomicIsize::new(0);
+    /// 我们自己的窗口句柄，用来随时核实「还挂着吗」
+    static OWN: AtomicIsize = AtomicIsize::new(0);
+
+    /// 意图：设置要求挂着 —— 不等于真的挂着
+    fn intent() -> bool {
+        PINNED.load(Ordering::Relaxed)
+    }
+
+    fn class_of(h: HWND) -> String {
+        let mut buf = [0u16; 256];
+        let n = unsafe { GetClassNameW(h, buf.as_mut_ptr(), buf.len() as i32) };
+        if n <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buf[..n as usize])
+    }
+
+    unsafe extern "system" fn scan_defview(child: HWND, l: isize) -> i32 {
+        let out = &mut *(l as *mut bool);
+        if *out {
+            return 1;
+        }
+        if class_of(child) == "SHELLDLL_DefView" {
+            *out = true;
+        }
+        1
+    }
+
+    fn hosts_defview(h: HWND) -> bool {
+        let mut found = false;
+        unsafe {
+            EnumChildWindows(h, Some(scan_defview), &mut found as *mut bool as isize);
+        }
+        found
+    }
+
+    unsafe extern "system" fn scan_workerw(h: HWND, l: isize) -> i32 {
+        let out = &mut *(l as *mut isize);
+        if *out != 0 {
+            return 1;
+        }
+        if class_of(h) == "WorkerW" && hosts_defview(h) {
+            *out = h as isize;
+        }
+        1
+    }
+
+    /// 壁纸由哪个窗口在画：只认 WorkerW / Progman 这两个类名。
+    /// 不能光按「有没有 SHELLDLL_DefView 子窗口」找 —— 资源管理器的文件夹窗口也有，
+    /// 探针实测就误命中过他正开着的那个文件夹。
+    fn wallpaper_window() -> Option<HWND> {
+        let mut hit: isize = 0;
+        unsafe {
+            EnumWindows(Some(scan_workerw), &mut hit as *mut isize as isize);
+            if hit != 0 {
+                return Some(hit as HWND);
+            }
+            let name: Vec<u16> = "Progman".encode_utf16().chain(std::iter::once(0)).collect();
+            let p = FindWindowW(name.as_ptr(), std::ptr::null());
+            if p.is_null() {
+                None
+            } else {
+                Some(p)
+            }
+        }
+    }
+
+    /// 事实：现在真的挂在桌面层吗。
+    /// 不能只信 PINNED：只要有任何一处按顶层窗口的语义去动它（例如给子窗口传
+    /// HWND_TOPMOST / HWND_NOTOPMOST 这类只对顶层窗口有意义的哨兵值），
+    /// Windows 就会把它从桌面层摘出去，而 PINNED 还留着 true ——
+    /// 于是位置照样按父窗口原点偏、界面照样显示「已钉住」，两边都对不上现实。
+    pub fn is_pinned() -> bool {
+        if !intent() {
+            return false;
+        }
+        let own = OWN.load(Ordering::Relaxed);
+        let par = PARENT.load(Ordering::Relaxed);
+        if own == 0 || par == 0 {
+            return false;
+        }
+        unsafe { GetAncestor(own as HWND, GA_PARENT) as isize == par }
+    }
+
+    /// 意图是挂、事实不是 → 需要重挂
+    pub fn needs_repin() -> bool {
+        intent() && !is_pinned()
+    }
+
+    /// 钉住期间的「不接鼠标键盘」：直接改扩展样式位。
+    /// 位与 tao 的 `set_ignore_cursor_events` 一致（TRANSPARENT|LAYERED，老版鼠标穿透
+    /// 就是这么实现的），但**不走那个接口** —— 实测窗口挂进桌面层之后，tao 那条路径
+    /// 只更新它自己缓存的 WindowFlags，样式位不再落到窗口上（还是顶层时能落）。
+    ///
+    /// **必须在 SetParent 之前调用**：挂到 Progman 之后，Windows 会把我们的线程和
+    /// 桌面线程的输入队列绑在一起，这时连自己改自己的 GWL_EXSTYLE 都会被拒
+    /// （SetWindowLongW 返回 lasterr=203 ERROR_WINDOW_OF_OTHER_THREAD，实测）。
+    /// 反过来这也意味着挂上之后没人改得动它 —— 穿透位不会被抹，不需要额外补写。
+    fn set_passthrough_bits(hwnd: HWND, on: bool) {
+        // WS_EX_TRANSPARENT / WS_EX_LAYERED
+        const MASK: i32 = 0x0000_0020 | 0x0008_0000;
+        unsafe {
+            let ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            let next = if on { ex | MASK } else { ex & !MASK };
+            if next == ex {
+                return;
+            }
+            if SetWindowLongW(hwnd, GWL_EXSTYLE, next) == 0 {
+                return;
+            }
+            // 不碰 FRAMECHANGED：重算非客户区会把被 WebView 盖住的标题栏露出来（顶部白条，老 bug）
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+
+    /// 挂/摘父窗口、改穿透位、换算坐标 —— 连着做是四次重合成事件，
+    /// 用户看到的就是「点一下闪一下」。中间用 WM_SETREDRAW 把重绘挂起来，
+    /// 最后一次性作废重画（桌面整理类工具的标准做法）。
+    unsafe fn freeze_redraw(hwnd: HWND, allow: bool) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SendMessageW;
+        const WM_SETREDRAW: u32 = 0x000B;
+        // windows-sys 里 WPARAM/LPARAM 就是 usize/isize 别名，直接传值
+        SendMessageW(hwnd, WM_SETREDRAW, allow as usize, 0);
+    }
+
+    pub fn pin(hwnd: HWND) -> bool {
+        if is_pinned() {
+            return true;
+        }
+        let Some(parent) = wallpaper_window() else {
+            return false;
+        };
+        unsafe {
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            if GetWindowRect(hwnd, &mut rect) != 1 {
+                return false;
+            }
+            // 父窗口原点用它的**窗口矩形**，不是 ClientToScreen：
+            // Progman 没有标题栏/边框，客户区 == 窗口矩形；而实测 ClientToScreen
+            // 对它返回 (0,0)（Win11 的桌面窗口不按常规客户区回报），
+            // 拿那个当原点会把窗口整体甩偏一个虚拟屏宽度。
+            let mut prect = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            if GetWindowRect(parent, &mut prect) != 1 {
+                return false;
+            }
+            let (origin_x, origin_y) = (prect.left, prect.top);
+            // 下面四步各自都会引发一次重合成，挂起重绘让它们并成一次
+            freeze_redraw(hwnd, false);
+            // 穿透位要在挂上去**之前**打 —— 挂上之后输入队列并到桌面线程，改不动了
+            set_passthrough_bits(hwnd, true);
+            SetParent(hwnd, parent);
+            // 判"挂上了没有"要用 GetAncestor(GA_PARENT)：跨进程挂到 Progman 之后，
+            // GetParent 会回报 0（实测），拿它当校验就会误判失败、
+            // 既记不下父窗口原点，也让后面每次写位置都少减一个虚拟屏宽度。
+            let now = GetAncestor(hwnd, GA_PARENT) as isize;
+            if now != parent as isize {
+                // 没挂上就还是顶层窗口，这时还改得回来 —— 别留一个点不动的挂件
+                set_passthrough_bits(hwnd, false);
+                freeze_redraw(hwnd, true);
+                InvalidateRgn(hwnd, std::ptr::null_mut(), 0);
+                return false;
+            }
+            PAR_X.store(origin_x as isize, Ordering::Relaxed);
+            PAR_Y.store(origin_y as isize, Ordering::Relaxed);
+            PARENT.store(parent as isize, Ordering::Relaxed);
+            OWN.store(hwnd as isize, Ordering::Relaxed);
+            PINNED.store(true, Ordering::Relaxed);
+            // 位置搬进子窗口坐标系，别让它跳一下；z-order 要抬到桌面层最上面。
+            // 这里**不能**用 HWND_BOTTOM：桌面层的兄弟里有 SHELLDLL_DefView，
+            // 壁纸和桌面图标都是它画的，压到它下面等于一钉上就看不见
+            // （实测：钉上后 widget-below-defview=1，中心命中测试返回的是 defview）。
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                rect.left - origin_x,
+                rect.top - origin_y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+            // 恢复重绘并整块作废：换了父窗口 = 换了绘制上下文，不主动要一次重绘会留残影
+            freeze_redraw(hwnd, true);
+            InvalidateRgn(hwnd, std::ptr::null_mut(), 0);
+            true
+        }
+    }
+
+    pub fn unpin(hwnd: HWND) {
+        if !intent() {
+            return;
+        }
+        unsafe {
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            let ok = GetWindowRect(hwnd, &mut rect) == 1;
+            freeze_redraw(hwnd, false);
+            SetParent(hwnd, std::ptr::null_mut());
+            // 回到顶层才改得动扩展样式：撤掉穿透，挂件重新可点可打字
+            set_passthrough_bits(hwnd, false);
+            PINNED.store(false, Ordering::Relaxed);
+            PARENT.store(0, Ordering::Relaxed);
+            OWN.store(0, Ordering::Relaxed);
+            PAR_X.store(0, Ordering::Relaxed);
+            PAR_Y.store(0, Ordering::Relaxed);
+            if ok {
+                // 回到顶层后坐标又按屏幕解释了，摆回原来的位置。
+                // 这里抬到普通窗口最前而不是压底：解除钉桌面的意图就是把它拿回手里用，
+                // 压到底会立刻看不见，和「一钉上就消失」是同一个误会的两面。
+                SetWindowPos(
+                    hwnd,
+                    std::ptr::null_mut(),
+                    rect.left,
+                    rect.top,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+            freeze_redraw(hwnd, true);
+            InvalidateRgn(hwnd, std::ptr::null_mut(), 0);
+        }
+    }
+
+    /// 按**屏幕坐标**摆放窗口：钉桌面期间减掉父窗口客户区原点。
+    /// 参数与 TAO 的 set_outer_position 保持一致（同样是直接 SetWindowPos、
+    /// 同样不做边框换算），前端才不会出现「写进去的位置和读出来的对不上」。
+    pub fn place(hwnd: HWND, x: i32, y: i32) {
+        let (dx, dy) = if is_pinned() {
+            (
+                PAR_X.load(Ordering::Relaxed) as i32,
+                PAR_Y.load(Ordering::Relaxed) as i32,
+            )
+        } else {
+            (0, 0)
+        };
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x - dx,
+                y - dy,
+                0,
+                0,
+                SWP_ASYNCWINDOWPOS | SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod desktop_pin {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static PINNED: AtomicBool = AtomicBool::new(false);
+
+    pub fn is_pinned() -> bool {
+        PINNED.load(Ordering::Relaxed)
+    }
+    pub fn needs_repin() -> bool {
+        false
+    }
+    pub fn pin(_hwnd: *mut core::ffi::c_void) -> bool {
+        false
+    }
+    pub fn unpin(_hwnd: *mut core::ffi::c_void) {}
+    pub fn place(_hwnd: *mut core::ffi::c_void, _x: i32, _y: i32) {}
+}
+
+/// 主窗口的原生句柄（Windows 下就是 HWND）
+#[cfg(windows)]
+fn main_hwnd(app: &AppHandle) -> Option<*mut core::ffi::c_void> {
+    app.get_webview_window("main")?
+        .hwnd()
+        .ok()
+        .map(|h| h.0 as *mut core::ffi::c_void)
+}
+
+#[cfg(windows)]
+/// 把穿透位也记进 tao 自己缓存的 WindowFlags。
+/// 只手动改样式不够：tao 每次重算 ex 样式都是按缓存整体覆写，
+/// 开机时 show() 触发过一次，手动打的位就被它抹掉了（实测 ex 回到 0x40110）。
+/// 挂上之后再调它会写失败（输入队列已并到桌面线程），但 tao 是先更新缓存再写窗口，
+/// 所以缓存照样对上 —— 之后无论谁重算都会带上这两一位。
+fn mark_passthrough_in_tao(app: &AppHandle, on: bool) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_ignore_cursor_events(on);
+    }
+}
+
+/// 挂/摘要串行：点按钮（apply_desktop_pin）和贴边上报（set_dock_state）可能同时进来，
+/// 交错执行会出现「刚挂上就被另一次同步按旧读数摘下来」。
+static PIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 按「设置开启 且 当前没停靠」施加钉桌面，返回实际挂上没有。
+/// 设置改动、停靠变化、拖动结束、开机恢复都收敛到这一个函数里。
+fn sync_desktop_pin(app: &AppHandle) -> bool {
+    let _guard = PIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let want = read_desktop_pinned(app) && !is_docked();
+    #[cfg(windows)]
+    {
+        let Some(hwnd) = main_hwnd(app) else {
+            return desktop_pin::is_pinned();
+        };
+        if want {
+            // 先让 tao 把穿透位记进它自己缓存的 WindowFlags 并写一次 —— 顶层时写得动，
+            // 它那次 SWP_FRAMECHANGED 也落在挂父窗口之前；之后无论谁重算 ex 样式都带着
+            // 这两一位，而 pin 内部这次改样式变成幂等，不再多一次 SetWindowPos。
+            mark_passthrough_in_tao(app, true);
+            if !desktop_pin::pin(hwnd) {
+                mark_passthrough_in_tao(app, false);
+            }
+        } else {
+            desktop_pin::unpin(hwnd);
+            mark_passthrough_in_tao(app, false);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
+    }
+    // 穿透位由 pin/unpin 自己负责（挂上之后输入队列并到桌面线程，就改不动了）
+    desktop_pin::is_pinned()
+}
+
+fn apply_desktop_pin(app: &AppHandle, enabled: bool) -> Result<bool, String> {
+    write_setting_bool(app, "desktopPin", enabled)?;
+    let applied = sync_desktop_pin(app);
+    rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
+    app.emit(
+        SETTINGS_UPDATED_EVENT,
+        serde_json::json!({ "ts": now_ms(), "source": "rust" }),
+    )
+    .map_err(|e| format!("通知前端失败: {e}"))?;
+    Ok(applied)
+}
+
+fn toggle_desktop_pin(app: &AppHandle) -> Result<bool, String> {
+    apply_desktop_pin(app, !read_desktop_pinned(app))
+}
+
+/// 开机时资源管理器可能还没把桌面窗口建好，试若干次；顺便盯着父窗口是否被换掉
+fn start_pin_watchdog(app: &AppHandle) {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        for _ in 0..15 {
+            if sync_desktop_pin(&handle) || !read_desktop_pinned(&handle) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        }
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+            #[cfg(windows)]
+            if desktop_pin::needs_repin() {
+                let _ = sync_desktop_pin(&handle);
+            }
+        }
+    });
+}
+
+/// 设置钉桌面：返回是否真的挂上（停靠期间设为开也挂不上，等解除停靠后自动挂）
+#[tauri::command]
+fn set_desktop_pinned(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    apply_desktop_pin(&app, enabled)
+}
+
+/// 钉桌面当前是否真的生效（前端据此决定按钮亮不亮）
+#[tauri::command]
+fn get_desktop_pin_state() -> bool {
+    desktop_pin::is_pinned()
+}
+
+/// 贴边隐藏上报停靠状态：停靠 = 钉桌面自动挂起（唤出要靠临时置顶，桌面层做不到）。
+/// 只挂起，不改设置值 —— 解除停靠后自动挂回，用户不用重新点一次。
+#[tauri::command]
+fn set_dock_state(app: AppHandle, active: bool) -> Result<bool, String> {
+    let was = is_docked();
+    DOCKED.store(active, std::sync::atomic::Ordering::Relaxed);
+    let applied = sync_desktop_pin(&app);
+    if was != active {
+        rebuild_tray_menu(&app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
+    }
+    Ok(applied)
+}
+
+/// 前端唯一的位置写入口：钉桌面期间窗口是桌面窗口的子窗口，
+/// 位置要按父窗口客户区原点换算，Tauri 自己的 setPosition 不懂这件事。
+#[tauri::command]
+fn set_widget_position(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let Some(hwnd) = main_hwnd(&app) else {
+            return Err("没有主窗口".to_string());
+        };
+        desktop_pin::place(hwnd, x, y);
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let w = app.get_webview_window("main").ok_or("没有主窗口")?;
+        w.set_position(tauri::PhysicalPosition::new(x, y))
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// 创建并展示一条独立提醒弹窗（置顶 / 不可被主窗口遮挡）
@@ -965,13 +1404,7 @@ fn set_focus_mode(app: AppHandle, enabled: bool) -> Result<(), String> {
     apply_focus_mode(&app, enabled)
 }
 
-/// 设置鼠标穿透：前端按钮只用于开启，关闭只能走托盘
-#[tauri::command]
-fn set_mouse_passthrough(app: AppHandle, enabled: bool) -> Result<(), String> {
-    apply_mouse_passthrough(&app, enabled)
-}
-
-/// 设置窗口置顶（托盘、快捷键、前端均可调用）
+/// 设置窗口锁定（托盘、快捷键、前端均可调用）
 #[tauri::command]
 fn set_window_locked(app: AppHandle, enabled: bool) -> Result<(), String> {
     apply_window_lock(&app, enabled)
@@ -1027,33 +1460,25 @@ pub(crate) fn read_setting_string_app<R: Runtime>(
 
 /// 从 settings 表读取快捷键配置并注册全局快捷键（空字符串 = 不注册）
 fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let (toggle_window, toggle_focus, toggle_lock, toggle_passthrough) =
-        match litenote_db_path(app) {
-            Some(db_path) if db_path.exists() => match Connection::open(&db_path) {
-                Ok(conn) => (
-                    read_setting_string(&conn, "shortcutToggleWindow", "CmdOrCtrl+Shift+L"),
-                    read_setting_string(&conn, "shortcutFocusMode", "CmdOrCtrl+Shift+F"),
-                    read_setting_string(&conn, "shortcutWindowLock", "CmdOrCtrl+Shift+P"),
-                    read_setting_string(
-                        &conn,
-                        "shortcutMousePassthrough",
-                        "CmdOrCtrl+Shift+M",
-                    ),
-                ),
-                Err(_) => (
-                    "CmdOrCtrl+Shift+L".to_string(),
-                    "CmdOrCtrl+Shift+F".to_string(),
-                    "CmdOrCtrl+Shift+P".to_string(),
-                    "CmdOrCtrl+Shift+M".to_string(),
-                ),
-            },
-            _ => (
+    let (toggle_window, toggle_focus, toggle_lock) = match litenote_db_path(app) {
+        Some(db_path) if db_path.exists() => match Connection::open(&db_path) {
+            Ok(conn) => (
+                read_setting_string(&conn, "shortcutToggleWindow", "CmdOrCtrl+Shift+L"),
+                read_setting_string(&conn, "shortcutFocusMode", "CmdOrCtrl+Shift+F"),
+                read_setting_string(&conn, "shortcutWindowLock", "CmdOrCtrl+Shift+P"),
+            ),
+            Err(_) => (
                 "CmdOrCtrl+Shift+L".to_string(),
                 "CmdOrCtrl+Shift+F".to_string(),
                 "CmdOrCtrl+Shift+P".to_string(),
-                "CmdOrCtrl+Shift+M".to_string(),
             ),
-        };
+        },
+        _ => (
+            "CmdOrCtrl+Shift+L".to_string(),
+            "CmdOrCtrl+Shift+F".to_string(),
+            "CmdOrCtrl+Shift+P".to_string(),
+        ),
+    };
 
     let mut errors: Vec<String> = Vec::new();
 
@@ -1094,20 +1519,6 @@ fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> 
             },
         ) {
             errors.push(format!("{toggle_lock}: {e}"));
-        }
-    }
-
-    // 鼠标穿透 / 界面锁定：开启后界面点不到，所以快捷键是唯一的"关回来"方式之一
-    if !toggle_passthrough.is_empty() {
-        if let Err(e) = app.global_shortcut().on_shortcut(
-            toggle_passthrough.as_str(),
-            move |app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    let _ = toggle_mouse_passthrough(app);
-                }
-            },
-        ) {
-            errors.push(format!("{toggle_passthrough}: {e}"));
         }
     }
 
@@ -1174,7 +1585,15 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
-        let _ = w.set_focus();
+        // 钉在桌面层时不要焦点：子窗口的「激活」会落到桌面窗口(Progman)上，
+        // 等于把桌面切到前台；钉住本来就要求鼠标键盘都不接到挂件。
+        #[cfg(windows)]
+        let focusable = !desktop_pin::is_pinned();
+        #[cfg(not(windows))]
+        let focusable = true;
+        if focusable {
+            let _ = w.set_focus();
+        }
     }
     // show() 同样会让 TAO 重套窗口样式（把 WS_CAPTION 带回来），显示后再收敛一次
     apply_window_lock_effects(app);
@@ -1343,7 +1762,10 @@ pub fn run() {
             set_focus_mode,
             set_window_locked,
             refresh_window_lock,
-            set_mouse_passthrough,
+            set_desktop_pinned,
+            get_desktop_pin_state,
+            set_dock_state,
+            set_widget_position,
             quit_app,
             update_shortcuts,
             webdav::webdav_set_config,
@@ -1402,13 +1824,7 @@ pub fn run() {
 
             let focus_mode = read_focus_mode(app.handle());
             let window_locked = read_window_locked(app.handle());
-            let mouse_passthrough = read_mouse_passthrough(app.handle());
-            let menu = build_tray_menu(
-                app.handle(),
-                focus_mode,
-                window_locked,
-                mouse_passthrough,
-            )?;
+            let menu = build_tray_menu(app.handle(), focus_mode, window_locked)?;
 
             let _tray = TrayIconBuilder::with_id("litenote-tray")
                 .icon(icon)
@@ -1431,8 +1847,8 @@ pub fn run() {
                     "tray_window_lock" => {
                         let _ = toggle_window_lock(app);
                     }
-                    "tray_mouse_passthrough" => {
-                        let _ = toggle_mouse_passthrough(app);
+                    "tray_desktop_pin" => {
+                        let _ = toggle_desktop_pin(app);
                     }
                     _ => {}
                 })
@@ -1490,12 +1906,15 @@ pub fn run() {
                 eprintln!("[LiteNote] 全局快捷键注册失败: {e}");
             }
 
-            // 启动时按「穿透开启 且 非专注模式」恢复窗口穿透状态，
-            // 避免前端设置加载完成之前窗口短暂可点击
-            apply_effective_passthrough(app.handle());
+            // 启动时按 DB 里的「锁定窗口」恢复命中测试拦截，
+            // 避免前端设置加载完成之前窗口还能被拖动 / 拉伸
+            apply_window_lock_effects(app.handle());
 
             // 启动后强制显示主窗口，避免 window-state 或上次隐藏导致「启动打不开」
             show_main_window(app.handle());
+
+            // 钉桌面：桌面层的父窗口要等资源管理器建好，试若干次；之后一直盯着它有没有被换掉
+            start_pin_watchdog(app.handle());
 
             Ok(())
         })

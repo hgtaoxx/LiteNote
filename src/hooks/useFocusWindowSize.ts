@@ -24,12 +24,12 @@ import { useSettingsStore } from "@/stores/settingsStore";
  *
  * 规则：
  *   进入专注（含启动时就已经是专注）→ 记录完整模式尺寸 → 窗口调成正方形
- *   专注 + 穿透 → 锁定当前尺寸、禁止缩放（继承现有大小，不重置尺寸）
- *   专注、无穿透 → 解除锁定、允许缩放
+ *   专注 + 锁定 → 锁定当前尺寸、禁止缩放（继承现有大小，不重置尺寸）
+ *   专注、未锁定 → 解除锁定、允许缩放
  *   退出专注     → 先解锁 → 恢复完整模式尺寸
  *   启动即完整   → 修正 window-state 可能恢复的专注尺寸 / 异常膨胀尺寸
  *
- * @param sizeLocked 是否锁死尺寸，由 resolveWindowMode 推导（专注 + 鼠标穿透）
+ * @param sizeLocked 是否锁死尺寸，由 resolveWindowMode 推导（专注 + 锁定窗口）
  */
 export function useFocusWindowSize(
   focusMode: boolean,
@@ -85,7 +85,7 @@ export function useFocusWindowSize(
        * 标记为 cancelled。如果像以前那样在 run() 开头就写 prevFocusMode，
        * 新一轮就会误判 entering = false —— 于是「记录完整模式尺寸 + 变成正方形」
        * 被整段跳过，还会走 lockCurrentWindowSize() 把窗口锁死在完整模式的矩形上。
-       * 表现为：专注 + 穿透 的正方形与尺寸锁定时灵时不灵。
+       * 表现为：专注 + 锁定 的正方形与尺寸锁定时灵时不灵。
        */
       const commit = () => {
         if (cancelled) return;
@@ -124,7 +124,7 @@ export function useFocusWindowSize(
           if (cancelled) return;
         }
 
-        // 专注 + 穿透 → 锁死尺寸；专注无穿透 → 解锁、自由缩放
+        // 专注 + 锁定 → 锁死尺寸；专注未锁定 → 解锁、自由缩放
         //
         // ⚠️ 这里刻意**不再调 setWindowResizable**：
         // 它会改 WindowFlags，令 TAO 重套窗口样式并调 SWP_FRAMECHANGED 重算
@@ -139,7 +139,7 @@ export function useFocusWindowSize(
               height: computeFocusWindowHeight(focusWidthRef.current),
             });
           } else {
-            // 已经在专注模式里再开启穿透：继承当前尺寸（用户可能刚拉过大小）
+            // 已经在专注模式里再开启锁定：继承当前尺寸（用户可能刚拉过大小）
             await lockCurrentWindowSize();
           }
         } else {

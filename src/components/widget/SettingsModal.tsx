@@ -394,14 +394,6 @@ function AboutTab({ locale }: { locale: Locale }) {
           conflictText={mk("shortcutConflict")}
           clearLabel={mk("shortcutClear")}
         />
-        <EditableShortcutRow
-          label={mk("shortcutMousePassthrough")}
-          shortcutKey="shortcutMousePassthrough"
-          notSetText={mk("shortcutNotSet")}
-          pressKeysText={mk("shortcutPressKeys")}
-          conflictText={mk("shortcutConflict")}
-          clearLabel={mk("shortcutClear")}
-        />
         <p className="text-xs pt-1" style={{ color: "var(--ln-theme-text-muted)" }}>
           {mk("shortcutHint")}
         </p>
@@ -534,7 +526,6 @@ function EditableShortcutRow({
             "shortcutToggleWindow",
             "shortcutFocusMode",
             "shortcutWindowLock",
-            "shortcutMousePassthrough",
           ] as ShortcutKey[]
         ).some((k) => k !== shortcutKey && state[k] === shortcut);
         if (conflict) {

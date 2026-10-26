@@ -22,16 +22,13 @@ export type ThemeId = "glass" | "dark" | "light" | "yellow" | "gray" | "pink";
 export type ShortcutKey =
   | "shortcutToggleWindow"
   | "shortcutFocusMode"
-  | "shortcutWindowLock"
-  | "shortcutMousePassthrough";
+  | "shortcutWindowLock";
 
 /** 所有设置项的默认值，作为唯一真实来源 */
 export const DEFAULT_SETTINGS = {
   clockCollapsed: true,
   showSeconds: true,
   weekCalendarCollapsed: true,
-  /** 鼠标穿透：开启后窗口忽略鼠标事件，只能从托盘关闭 */
-  mousePassthrough: false,
   /** 内容（待办正文）字号 px —— 界面其它字号不跟随，只有内容区读它 */
   contentFontSize: 14,
   /** 内容（待办正文）字体 —— 界面固定使用默认字体，不跟随 */
@@ -46,6 +43,11 @@ export const DEFAULT_SETTINGS = {
   autoStart: true,
   /** 贴边隐藏：窗口贴近屏幕左右边缘时自动吸附，鼠标离开后滑出只留一条窄边 */
   edgeHide: false,
+  /**
+   * 钉桌面：把挂件挂进桌面层的窗口里，「显示桌面 / Win+D」不再把它最小化。
+   * 代价是它永远在普通窗口之下、且不能置顶，所以停靠期间会自动挂起。
+   */
+  desktopPin: false,
   theme: "glass" as ThemeId,
   reminderMode: "popup" as "popup" | "system",
   focusMode: false,
@@ -54,8 +56,6 @@ export const DEFAULT_SETTINGS = {
   shortcutToggleWindow: "CmdOrCtrl+Shift+L",
   shortcutFocusMode: "CmdOrCtrl+Shift+F",
   shortcutWindowLock: "CmdOrCtrl+Shift+P",
-  /** 鼠标穿透 / 专注模式下的界面锁定（M = 鼠标 Mouse） */
-  shortcutMousePassthrough: "CmdOrCtrl+Shift+M",
   // WebDAV 同步（密码不在此处，由 Rust 端加密存储）
   webdavEnabled: false,
   webdavUrl: "",
@@ -73,7 +73,6 @@ export interface AppSettings {
   readonly clockCollapsed: boolean;
   readonly showSeconds: boolean;
   readonly weekCalendarCollapsed: boolean;
-  readonly mousePassthrough: boolean;
   readonly contentFontSize: number;
   readonly contentFontFamily: ContentFontId;
   readonly panelOpacity: number;
@@ -81,6 +80,7 @@ export interface AppSettings {
   readonly windowLocked: boolean;
   readonly autoStart: boolean;
   readonly edgeHide: boolean;
+  readonly desktopPin: boolean;
   readonly theme: ThemeId;
   readonly reminderMode: "popup" | "system";
   readonly focusMode: boolean;
@@ -89,7 +89,6 @@ export interface AppSettings {
   readonly shortcutToggleWindow: string;
   readonly shortcutFocusMode: string;
   readonly shortcutWindowLock: string;
-  readonly shortcutMousePassthrough: string;
   readonly webdavEnabled: boolean;
   readonly webdavUrl: string;
   readonly webdavUser: string;

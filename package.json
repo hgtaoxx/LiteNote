@@ -1,7 +1,7 @@
 {
   "name": "litenote",
   "private": true,
-  "version": "1.5.6",
+  "version": "1.6.5",
   "type": "module",
   "scripts": {
     "dev": "vite",

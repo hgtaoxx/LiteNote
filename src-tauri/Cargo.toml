@@ -1,6 +1,6 @@
 [package]
 name = "LiteNote"
-version = "1.5.6"
+version = "1.6.5"
 description = "A Tauri App"
 authors = ["秋枫"]
 edition = "2021"
@@ -43,6 +43,17 @@ rand = "0.8"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
+  "Win32_Graphics_Gdi",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# 体积优化：Rust 默认的 release 档是「编译快」优先 —— codegen-units=16 不跨单元
+# 内联、符号表留在 exe 里。这两项是 exe 从几 MB 涨到 18 MB 的主因（前端资源只占 0.7 MB）。
+# 代价是全量重编依赖、链接时间变长。
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
+opt-level = "z"
+panic = "abort"
 

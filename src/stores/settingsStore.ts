@@ -18,8 +18,6 @@ export interface SettingsState {
   clockCollapsed: boolean;
   showSeconds: boolean;
   weekCalendarCollapsed: boolean;
-  /** 鼠标穿透：开启后窗口忽略鼠标事件，只能从托盘关闭 */
-  mousePassthrough: boolean;
   /** 内容（待办正文）字号 px */
   contentFontSize: number;
   /** 内容（待办正文）字体 */
@@ -30,6 +28,8 @@ export interface SettingsState {
   autoStart: boolean;
   /** 贴边隐藏（类似 QQ） */
   edgeHide: boolean;
+  /** 钉桌面（挂在桌面层，Win+D 不再收起） */
+  desktopPin: boolean;
   /** WebDAV 同步开关（用于内容变化后的自动同步判断；实际同步在 Rust 侧执行） */
   webdavEnabled: boolean;
   theme: ThemeId;
@@ -40,7 +40,6 @@ export interface SettingsState {
   shortcutToggleWindow: string;
   shortcutFocusMode: string;
   shortcutWindowLock: string;
-  shortcutMousePassthrough: string;
   initialized: boolean;
   /** 最近一次 DB 写入错误信息，供 UI 展示 */
   lastError: string | null;
@@ -54,11 +53,12 @@ export interface SettingsActions {
   setShowSeconds: (v: boolean) => void;
   setWeekCalendarCollapsed: (v: boolean) => void;
   setWindowLocked: (v: boolean) => void;
-  setMousePassthrough: (v: boolean) => void;
   setContentFontSize: (v: number) => void;
   setContentFontFamily: (v: ContentFontId) => void;
   setAutoStart: (v: boolean) => void;
   setEdgeHide: (v: boolean) => void;
+  /** 设置钉桌面，返回「是否真的挂上了」（停靠期间只会记下设置） */
+  setDesktopPin: (v: boolean) => Promise<boolean>;
   setTheme: (t: ThemeId) => void;
   setReminderMode: (m: "popup" | "system") => void;
   setFocusMode: (v: boolean) => void;
@@ -186,17 +186,6 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
       });
     },
 
-    // 鼠标穿透走 Rust 命令：需要同时写 DB、设置窗口忽略鼠标事件、刷新托盘勾选状态。
-    // 前端按钮只用于开启；关闭必须从托盘操作（窗口已点不到）。
-    setMousePassthrough: (v) => {
-      set({ mousePassthrough: v });
-      invoke("set_mouse_passthrough", { enabled: v }).catch((e) => {
-        const msg = e instanceof Error ? e.message : String(e);
-        set({ lastError: `设置鼠标穿透失败: ${msg}` });
-        void useSettingsStore.getState().reloadFromDb();
-      });
-    },
-
     setAutoStart: (v) => {
       set({ autoStart: v });
       // 同步调用 autostart 插件启用/禁用
@@ -218,7 +207,7 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
 
     setEdgeHide: (v) => {
       set({ edgeHide: v });
-      // 实际动作在 Rust 侧的贴边隐藏轮询里（读同一个设置键）
+      // 实际动作在主窗口 WidgetShell 的贴边隐藏 effect 里（同一个 store 键）
       dbWrite(
         saveSetting("edgeHide", v),
         "saveSetting(edgeHide)",
@@ -226,6 +215,21 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
         emitSettingsChanged,
       );
     },
+
+    // 钉桌面走 Rust 命令：要写 DB、真的把窗口挂进桌面层（SetParent）或摘回顶层、
+    // 还要刷新托盘勾选。命令返回「实际挂上没有」—— 停靠期间只记设置，不挂。
+    setDesktopPin: (v) =>
+      invoke("set_desktop_pinned", { enabled: v })
+        .then((applied) => {
+          set({ desktopPin: v });
+          return Boolean(applied);
+        })
+        .catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e);
+          set({ lastError: `设置钉桌面失败: ${msg}` });
+          void useSettingsStore.getState().reloadFromDb();
+          return false;
+        }),
 
     setTheme: (t) => {
       set({ theme: t });
