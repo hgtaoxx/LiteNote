@@ -48,10 +48,26 @@ interface SettingsModalProps {
 }
 
 /* ──────────── Switch 滑动开关 ──────────── */
-function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+/**
+ * 开关。四个都用同一种滑块，不带状态字。
+ */
+function Switch({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+}) {
   return (
-    <label className="flex items-center justify-between cursor-pointer">
-      <span style={{ color: "var(--ln-theme-text)" }} className="text-sm">{label}</span>
+    <label className="flex items-center justify-between gap-1.5 cursor-pointer">
+      <span
+        style={{ color: "var(--ln-theme-text)" }}
+        className="ln-switch-label min-w-0 flex-1 truncate"
+      >
+        {label}
+      </span>
       <button
         type="button"
         role="switch"
@@ -76,6 +92,9 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: 
  * 想再微调只改这一个数字。
  */
 const SELECT_FONT_SIZE = 12.5;
+
+/** 快捷键那一栏按键帽的字号，比下拉再小一档 */
+const SHORTCUT_FONT_SIZE = 11.5;
 
 /* ──────────── CustomSelect 自定义下拉 ──────────── */
 function CustomSelect<T extends string>({
@@ -394,6 +413,14 @@ function AboutTab({ locale }: { locale: Locale }) {
           conflictText={mk("shortcutConflict")}
           clearLabel={mk("shortcutClear")}
         />
+        <EditableShortcutRow
+          label={mk("shortcutDesktopPin")}
+          shortcutKey="shortcutDesktopPin"
+          notSetText={mk("shortcutNotSet")}
+          pressKeysText={mk("shortcutPressKeys")}
+          conflictText={mk("shortcutConflict")}
+          clearLabel={mk("shortcutClear")}
+        />
         <p className="text-xs pt-1" style={{ color: "var(--ln-theme-text-muted)" }}>
           {mk("shortcutHint")}
         </p>
@@ -543,10 +570,14 @@ function EditableShortcutRow({
   }, [capturing, shortcutKey, setShortcut]);
 
   return (
-    <div className="flex items-center justify-between gap-2">
+    <div
+      className="flex items-center justify-between gap-2"
+      // 行高收到 1：这一行的实际高度由按钮帽决定，不再被未分层 font:inherit 带进来的 24px 行高撑开
+      style={{ lineHeight: 1 }}
+    >
       <span
-        className="min-w-0 text-sm whitespace-nowrap overflow-hidden text-ellipsis"
-        style={{ color: "var(--ln-theme-text)" }}
+        className="min-w-0 whitespace-nowrap overflow-hidden text-ellipsis"
+        style={{ color: "var(--ln-theme-text)", fontSize: 13 }}
         title={label}
       >
         {label}
@@ -556,8 +587,8 @@ function EditableShortcutRow({
           <button
             type="button"
             onClick={() => setShortcut(shortcutKey, "")}
-            className="shrink-0 flex h-5 w-5 items-center justify-center rounded text-xs transition hover:bg-white/10"
-            style={{ color: "var(--ln-theme-text-muted)" }}
+            className="shrink-0 flex h-5 w-5 items-center justify-center rounded transition hover:bg-white/10"
+            style={{ color: "var(--ln-theme-text-muted)", fontSize: 12 }}
             title={clearLabel}
           >
             ×
@@ -568,8 +599,8 @@ function EditableShortcutRow({
           onClick={() => { setCapturing(true); setError(false); }}
           className="shrink-0 rounded px-2 py-0.5 font-mono transition min-w-[72px] text-center"
           style={{
-            // 与「常规」页下拉菜单同一个字号常量，避免两处脱节
-            fontSize: SELECT_FONT_SIZE,
+            // 比「常规」页的下拉再小一档，整块快捷键读起来更轻
+            fontSize: SHORTCUT_FONT_SIZE,
             color: error
               ? "#f87171"
               : capturing
@@ -688,7 +719,8 @@ function SyncSettings({ locale }: { locale: Locale }) {
       });
       setStatus(msg);
     } catch (e) {
-      setStatus(mk("syncStatusError").replace("{msg}", String(e)));
+      // 这里失败的是「测试连接」，套「同步失败：」会让人以为同步动过他的数据
+      setStatus(mk("syncTestError").replace("{msg}", String(e)));
     } finally {
       setBusy("");
     }
@@ -755,19 +787,29 @@ function SyncSettings({ locale }: { locale: Locale }) {
     // 跟随界面宽度自适应，不再写死 260px 上限
     flex: "1 1 0",
     minWidth: 0,
-    padding: "6px 8px",
+    // 高度钉死成「同步方式」下拉一样的 24px：index.css 里未分层的 font:inherit 会把
+    // Tailwind 的行高顶掉，靠 padding 撑高度就会各处不一致，所以直接给 height。
+    height: 24,
+    boxSizing: "border-box",
+    padding: "0 8px",
     borderRadius: 6,
     fontSize: 13,
     color: "var(--ln-theme-text)",
     background: "var(--ln-theme-surface)",
     border: "1px solid var(--ln-theme-border)",
   };
+  /** 与主面板「添加」同高（28px），字号显式给，避免被未分层的 font:inherit 顶成 16px */
+  const syncBtnStyle: React.CSSProperties = {
+    height: 28,
+    boxSizing: "border-box",
+    fontSize: 13,
+  };
 
   return (
     <div className="space-y-4">
       <Switch checked={enabled} onChange={onToggle} label={mk("syncEnable")} />
 
-      <div className={`space-y-3 ${enabled ? "" : "opacity-50 pointer-events-none"}`}>
+      <div className={`space-y-2 ${enabled ? "" : "opacity-50 pointer-events-none"}`}>
         {/* 同步方式：下拉，目前仅坚果云，预留扩展。默认已带入预设地址，无需手动切换 */}
         <div style={fieldWrap}>
           <span style={labelStyle}>{mk("syncMethod")}</span>
@@ -830,6 +872,7 @@ function SyncSettings({ locale }: { locale: Locale }) {
           <span style={labelStyle}>{mk("syncRemotePath")}</span>
           <input
             style={inputStyle}
+            placeholder={mk("syncRemotePathPlaceholder")}
             value={remotePath}
             onChange={(e) => setRemotePath(e.target.value)}
           />
@@ -840,8 +883,8 @@ function SyncSettings({ locale }: { locale: Locale }) {
             type="button"
             onClick={onTest}
             disabled={busy !== "" || !url || !user}
-            className="flex-1 rounded-md py-1.5 text-xs font-medium transition disabled:opacity-40"
-            style={{ background: "var(--ln-theme-surface)", color: "var(--ln-theme-text)" }}
+            className="flex-1 rounded-md font-medium transition disabled:opacity-40"
+            style={{ ...syncBtnStyle, background: "var(--ln-theme-surface)", color: "var(--ln-theme-text)" }}
           >
             {mk("syncTest")}
           </button>
@@ -849,8 +892,8 @@ function SyncSettings({ locale }: { locale: Locale }) {
             type="button"
             onClick={onSync}
             disabled={busy !== "" || !enabled}
-            className="flex-1 rounded-md py-1.5 text-xs font-medium transition disabled:opacity-40"
-            style={{ background: "#0ea5e9", color: "white" }}
+            className="flex-1 rounded-md font-medium transition disabled:opacity-40"
+            style={{ ...syncBtnStyle, background: "#0ea5e9", color: "white" }}
           >
             {mk("syncNow")}
           </button>
@@ -860,14 +903,21 @@ function SyncSettings({ locale }: { locale: Locale }) {
           type="button"
           onClick={onRestore}
           disabled={busy !== "" || !enabled}
-          className="w-full rounded-md py-1.5 text-xs font-medium transition disabled:opacity-40"
-          style={{ background: "var(--ln-theme-surface)", color: "#f87171", border: "1px solid var(--ln-theme-border)" }}
+          className="w-full rounded-md font-medium transition disabled:opacity-40"
+          style={{ ...syncBtnStyle, background: "var(--ln-theme-surface)", color: "#f87171", border: "1px solid var(--ln-theme-border)" }}
         >
           {mk("syncRestore")}
         </button>
       </div>
 
-      <div className="pt-1 text-xs space-y-1" style={{ color: "var(--ln-theme-text-muted)" }}>
+      {/* 「上次同步」原来离按钮区有 20px（外层 space-y-4 的 16px + pt-1 的 4px），
+          正好比正文多出一整行，看着像另一个区块。这里用内联负 margin 把它提上来
+          （内联样式一定盖得过 space-y-* 生成的 margin-top，不用跟 Tailwind 的层序较劲），
+          最终留 4px 呼吸位。 */}
+      <div
+        className="text-xs space-y-1"
+        style={{ color: "var(--ln-theme-text-muted)", marginTop: -12 }}
+      >
         <div>{mk("syncLast")}{formatSyncTime(lastSync, mk("syncNever"))}</div>
         {status && <div style={{ color: "var(--ln-theme-text)" }}>{status}</div>}
       </div>
@@ -1028,29 +1078,44 @@ export function SettingsModal({
           `}</style>
         </section>
 
-        {/* 功能开关 */}
-        <section className="mb-5 space-y-4">
-          <Switch
-            checked={!clockCollapsed}
-            onChange={(v) => onSetClockCollapsed(!v)}
-            label={mk("showClockSection")}
-          />
-          <Switch
-            checked={!weekCalendarCollapsed}
-            onChange={(v) => onSetWeekCalendarCollapsed(!v)}
-            label={mk("showWeekCalendarSection")}
-          />
-          <Switch
-            checked={autoStart}
-            onChange={onSetAutoStart}
-            label={mk("autoStart")}
-          />
-          {/* 贴边隐藏：按用户要求放在「开机启动」下方 */}
-          <Switch
-            checked={edgeHide}
-            onChange={onSetEdgeHide}
-            label={mk("edgeHide")}
-          />
+        {/*
+          功能开关：一行两个，第一行「开机启动 / 贴边隐藏」，第二行「时钟区 / 周日历」。
+          字号用未分层的 CSS 压到 13px —— Tailwind v4 的 text-sm 在 @layer utilities 里，
+          会被 index.css 未分层的规则盖掉（这个坑在循环面板那边踩过一次）。
+          四个都是同一种 30×18 滑块，滑块上不带字。
+        */}
+        <section className="mb-5">
+          <div className="ln-switch-grid grid gap-x-2 gap-y-1.5">
+            <Switch
+              checked={autoStart}
+              onChange={onSetAutoStart}
+              label={mk("autoStart")}
+            />
+            <Switch
+              checked={edgeHide}
+              onChange={onSetEdgeHide}
+              label={mk("edgeHide")}
+            />
+            <Switch
+              checked={!clockCollapsed}
+              onChange={(v) => onSetClockCollapsed(!v)}
+              label={mk("showClockSection")}
+            />
+            <Switch
+              checked={!weekCalendarCollapsed}
+              onChange={(v) => onSetWeekCalendarCollapsed(!v)}
+              label={mk("showWeekCalendarSection")}
+            />
+          </div>
+          <style>{`
+            .ln-switch-grid .ln-switch-label { font-size: 13px; }
+            /* 固定两列；面板被拉得很窄时（CSS 视口 <260px ≈ 物理 <325px）退回一列，
+               免得把「开机启动」这类标签挤成半截 */
+            .ln-switch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            @media (max-width: 260px) {
+              .ln-switch-grid { grid-template-columns: minmax(0, 1fr); }
+            }
+          `}</style>
         </section>
 
         {/* 分隔线 */}

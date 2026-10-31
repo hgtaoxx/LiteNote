@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import { COLOR_DOT_STYLE } from "@/lib/itemColors";
-import { TODO_COLOR_CSS_VAR } from "@/lib/todoImportanceColors";
 import { formatDueDate } from "@/lib/dueDate";
-import { formatRecurrence, computeNextDueDate } from "@/lib/recurrence";
+import {
+  formatRecurrence,
+  formatRecurrenceCollapsed,
+  computeNextDueDate,
+} from "@/lib/recurrence";
 import type { TodoItem } from "@/types/todo";
 import { useNow } from "@/hooks/useNow";
 
@@ -111,9 +114,6 @@ function FocusTodoRow({
   onToggleCompleted: () => void;
 }) {
   const dotStyle = COLOR_DOT_STYLE[todo.colorId];
-  // 角标 / 勾号的前景色：不能取 dotStyle.background（hollow 是 transparent），
-  // 用同一档的纯色变量，空心圆也能有可见的前景色
-  const accent = TODO_COLOR_CSS_VAR[todo.colorId];
 
   return (
     <div
@@ -141,13 +141,7 @@ function FocusTodoRow({
             className="flex h-[0.7rem] w-[0.7rem] items-center justify-center rounded-full"
             style={{ ...dotStyle }}
           />
-          {/* 循环角标 */}
-          <span
-            className="pointer-events-none absolute -right-0.5 -top-0.5 text-[0.55rem] leading-none"
-            style={{ color: accent }}
-          >
-            ↻
-          </span>
+          {/* 循环角标已去掉：条目本身不加符号，循环只标在时间前面 */}
         </button>
       ) : (
         <button
@@ -189,17 +183,40 @@ function FocusTodoRow({
  * 刻意不做「今天 / 明天」这种相对化：创建与完成日期是已经发生的事实，
  * 用绝对日期表述更清楚；跨年时补上年份避免歧义。
  */
+/** 时间一律到分钟（按用户要求，设置里不再有开关） */
 function formatStamp(ts: number, locale: Locale): string {
   if (!ts || ts <= 0) return "";
   const d = new Date(ts);
   const sameYear = d.getFullYear() === new Date().getFullYear();
   const m = d.getMonth() + 1;
   const day = d.getDate();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const time = `${p(d.getHours())}:${p(d.getMinutes())}`;
 
   if (locale === "en") {
-    return sameYear ? `${m}/${day}` : `${m}/${day}/${d.getFullYear()}`;
+    return sameYear
+      ? `${p(m)}/${p(day)} ${time}`
+      : `${p(m)}/${p(day)}/${d.getFullYear()} ${time}`;
   }
-  return sameYear ? `${m}月${day}日` : `${d.getFullYear()}年${m}月${day}日`;
+  return sameYear
+    ? `${p(m)}月${p(day)}日 ${time}`
+    : `${d.getFullYear()}年${p(m)}月${p(day)}日 ${time}`;
+}
+
+/**
+ * 已完成行的时间写法：「开始时间～完成时间」。
+ * 同一天只写一次日期：10月31日 09:12～16:40；跨天则两边都带日期。
+ */
+function formatCompletedRange(start: number, end: number, locale: Locale): string {
+  const from = formatStamp(start, locale);
+  const to = formatStamp(end, locale);
+  if (!from) return to;
+  if (!to) return from;
+  if (new Date(start).toDateString() !== new Date(end).toDateString()) {
+    return `${from}～${to}`;
+  }
+  const cut = to.indexOf(" ");
+  return `${from}～${cut > 0 ? to.slice(cut + 1) : to}`;
 }
 
 function ManagementTodoRow({
@@ -217,10 +234,9 @@ function ManagementTodoRow({
   sorting = false,
 }: Omit<TodoRowProps, "focusMode">) {
   const dotStyle = COLOR_DOT_STYLE[todo.colorId];
-  // 角标 / 勾号的前景色：不能取 dotStyle.background（hollow 是 transparent），
-  // 用同一档的纯色变量，空心圆也能有可见的前景色
-  const accent = TODO_COLOR_CSS_VAR[todo.colorId];
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 循环规则默认收起成一行，点一下才展开
+  const [recurOpen, setRecurOpen] = useState(false);
 
   /*
     长按进入排序模式（iOS 那种"按住开始抖动"）。
@@ -269,33 +285,51 @@ function ManagementTodoRow({
 
   const dueLabel = useMemo(() => {
     if (todo.dueDate <= 0) return null;
+    const loc = locale === "en" ? "en" : "zh-CN";
 
     // 循环待办：如果当前 dueDate 已过期，展示自动推进后的下一次时间
     if (todo.isRecurring && todo.dueDate <= Date.now()) {
       const nextDue = computeNextDueDate(
-        todo.dueDate,
+        Date.now(),
         todo.recurrenceType,
         todo.recurrenceConfig,
+        todo.dueDate,
       );
       if (nextDue > 0) {
-        return formatDueDate(nextDue, locale === "en" ? "en" : "zh-CN");
+        return formatDueDate(nextDue, loc);
       }
       return null;
     }
-    return formatDueDate(todo.dueDate, locale === "en" ? "en" : "zh-CN");
-  }, [todo.dueDate, todo.isRecurring, todo.recurrenceType, todo.recurrenceConfig, locale, now]);
+    return formatDueDate(todo.dueDate, loc);
+  }, [
+    todo.dueDate,
+    todo.isRecurring,
+    todo.recurrenceType,
+    todo.recurrenceConfig,
+    locale,
+    now,
+  ]);
 
-  const recurrenceLabel = useMemo(
-    () =>
-      todo.isRecurring
-        ? formatRecurrence(
-            todo.recurrenceType,
-            todo.recurrenceConfig,
-            locale === "en" ? "en" : "zh-CN",
-          )
-        : null,
-    [todo.isRecurring, todo.recurrenceType, todo.recurrenceConfig, locale],
-  );
+  const recurrenceLabel = useMemo(() => {
+    if (!todo.isRecurring) return null;
+    const loc = locale === "en" ? "en" : "zh-CN";
+    // 折叠只露前两个时间点，点开才把全部列出来
+    return recurOpen
+      ? formatRecurrence(todo.recurrenceType, todo.recurrenceConfig, loc, todo.dueDate)
+      : formatRecurrenceCollapsed(
+          todo.recurrenceType,
+          todo.recurrenceConfig,
+          loc,
+          todo.dueDate,
+        );
+  }, [
+    todo.isRecurring,
+    todo.recurrenceType,
+    todo.recurrenceConfig,
+    todo.dueDate,
+    locale,
+    recurOpen,
+  ]);
 
   // 进入编辑态时，光标定位到文本末尾
   useEffect(() => {
@@ -377,12 +411,6 @@ function ManagementTodoRow({
             className="flex h-[0.7rem] w-[0.7rem] items-center justify-center rounded-full"
             style={{ ...dotStyle }}
           />
-          <span
-            className="pointer-events-none absolute -right-0.5 -top-0.5 text-[0.6rem] leading-none"
-            style={{ color: accent }}
-          >
-            ↻
-          </span>
         </button>
       ) : (
         <button
@@ -475,16 +503,36 @@ function ManagementTodoRow({
               {todo.text || (locale === "zh-CN" ? "（空）" : "(empty)")}
             </span>
             {(dueLabel || recurrenceLabel) ? (
-              <div className="mt-0.5 flex items-center gap-1.5">
+              <div className="mt-0.5 flex min-w-0 items-baseline gap-1.5">
                 {recurrenceLabel ? (
-                  <span className="text-xs" style={{ color: "var(--ln-theme-text-secondary)" }}>
+                  /*
+                    循环规则默认只显示一行、超出用省略号（多个星期 × 多个时间点会很长），
+                    点这一行才展开看全部。
+                  */
+                  <span
+                    role="button"
+                    tabIndex={-1}
+                    data-tauri-no-drag
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      setRecurOpen((v) => !v);
+                    }}
+                    className={
+                      "min-w-0 flex-1 cursor-pointer text-xs " +
+                      (recurOpen ? "break-words" : "truncate")
+                    }
+                    style={{ color: "var(--ln-theme-text-secondary)" }}
+                  >
                     ↻ {recurrenceLabel}
                   </span>
                 ) : null}
                 {dueLabel ? (
-                  <span className="text-xs"
+                  <span className="flex shrink-0 items-center gap-0.5 text-xs"
                     style={{ color: todo.completed ? "var(--ln-theme-text-muted)" : "var(--ln-theme-text-secondary)" }}
                   >
+                    <AlarmIcon />
                     {dueLabel}
                   </span>
                 ) : null}
@@ -497,17 +545,13 @@ function ManagementTodoRow({
       {/*
         日期行：
           · 独占一整行：父级 flex-wrap + 这里的 w-full，横跨整行宽度
-          · 进行中：只有创建日期，按用户要求放**右下角**（justify-end）
-          · 已完成：创建日期在左、完成日期在右（justify-between）
+          · 进行中：创建时间；已完成：「开始～完成」一段 —— 都落在**右下角**
           · 左右各内缩 1 个字符（1em 跟着字号走，改字号内缩同步变）
           · 与正文之间固定 DATE_GAP_Y（暂定 6px），日期贴着行底
       */}
       {todo.completed || todo.createTime > 0 ? (
         <div
-          className={
-            "flex w-full items-center " +
-            (todo.completed ? "justify-between" : "justify-end")
-          }
+          className="flex w-full items-center justify-end"
           style={{
             fontSize: DATE_FONT_SIZE,
             // 行高 1：日期自身不再产生额外半行距
@@ -537,19 +581,42 @@ function ManagementTodoRow({
             padding: `0 1em ${DATE_BOTTOM_PAD}px`,
           }}
         >
-          {/* 已完成才有左侧的创建日期；进行中只显示一个日期，落在右下角 */}
-          {todo.completed ? (
-            <span style={{ color: "var(--ln-theme-text-muted)" }}>
-              {formatStamp(todo.createTime, locale)}
-            </span>
-          ) : null}
+          {/*
+            右下角的日期：
+              · 进行中 —— 创建时间
+              · 已完成 —— 「开始时间～完成时间」合成一段（同一天时后面只留时刻）
+          */}
           <span style={{ color: "var(--ln-theme-text-muted)" }}>
             {todo.completed
-              ? formatStamp(todo.completedTime, locale)
+              ? formatCompletedRange(
+                  todo.createTime,
+                  todo.completedTime || todo.updateTime,
+                  locale,
+                )
               : formatStamp(todo.createTime, locale)}
           </span>
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** 截止时间前的小闹钟：跟着文字颜色走，字号用 em 与行内文字等比 */
+function AlarmIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      style={{ width: "0.95em", height: "0.95em", flexShrink: 0 }}
+    >
+      <circle cx="12" cy="13" r="8" />
+      <path d="M12 9.5V13l2.5 2.5" />
+      <path d="M5 3 2.6 5.4M19 3l2.4 2.4" />
+    </svg>
   );
 }

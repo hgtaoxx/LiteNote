@@ -40,6 +40,7 @@ export interface SettingsState {
   shortcutToggleWindow: string;
   shortcutFocusMode: string;
   shortcutWindowLock: string;
+  shortcutDesktopPin: string;
   initialized: boolean;
   /** 最近一次 DB 写入错误信息，供 UI 展示 */
   lastError: string | null;

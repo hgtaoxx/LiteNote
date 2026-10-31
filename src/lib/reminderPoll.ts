@@ -32,15 +32,16 @@ export function startReminderPoll(): void {
           recurrence_config: string;
         }>
       >(
-        "SELECT id, due_date, recurrence_type, recurrence_config FROM todos WHERE is_recurring = 1 AND due_date > 0 AND due_date < $1",
+        "SELECT id, due_date, recurrence_type, recurrence_config FROM todos WHERE deleted = 0 AND is_recurring = 1 AND due_date > 0 AND due_date < $1",
         [now],
       );
 
       for (const row of overdueRecurring) {
         const nextDue = computeNextDueDate(
-          row.due_date,
+          now,
           row.recurrence_type as RecurrenceType,
           row.recurrence_config,
+          row.due_date,
         );
 
         if (nextDue > 0) {

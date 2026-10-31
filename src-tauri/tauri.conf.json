@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "仗贱走天涯",
-  "version": "1.6.5",
+  "productName": "一笺",
+  "mainBinaryName": "Yijian",
+  "version": "1.6.6",
   "identifier": "com.zhangjianzoutianya.litenote",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -13,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "轻签",
+        "title": "一笺",
         "width": 360,
         "height": 620,
         "decorations": false,

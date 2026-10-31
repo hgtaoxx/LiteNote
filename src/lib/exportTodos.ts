@@ -77,7 +77,7 @@ export function generateExportContent(
 export async function saveTxt(content: string): Promise<void> {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
-  const defaultName = `LiteNote_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.txt`;
+  const defaultName = `Yijian_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.txt`;
 
   const filePath = await save({
     defaultPath: defaultName,

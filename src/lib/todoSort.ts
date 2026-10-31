@@ -49,9 +49,10 @@ function weekStart(ts: number): number {
 
 function monthDayLabel(ts: number, locale: Locale): string {
   const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
   return locale === "en"
-    ? `${d.getMonth() + 1}/${d.getDate()}`
-    : `${d.getMonth() + 1}月${d.getDate()}日`;
+    ? `${p(d.getMonth() + 1)}/${p(d.getDate())}`
+    : `${p(d.getMonth() + 1)}月${p(d.getDate())}日`;
 }
 
 export function bucketCompletedByTime(
@@ -110,7 +111,7 @@ export function bucketCompletedByTime(
         `m:${d.getFullYear()}-${d.getMonth() + 1}`,
         locale === "en"
           ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
-          : `${d.getFullYear()}年${d.getMonth() + 1}月`,
+          : `${d.getFullYear()}年${String(d.getMonth() + 1).padStart(2, "0")}月`,
         todo,
       );
       continue;

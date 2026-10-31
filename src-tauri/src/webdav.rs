@@ -24,9 +24,10 @@ use crate::{
     read_setting_string_app, SETTINGS_UPDATED_EVENT, TODOS_UPDATED_EVENT,
 };
 
-/// 远端文件名（存于用户配置的 remotePath 目录下，默认 /zhangjianzoutianya/litenote.json）
-/// 刻意与原版的 /LiteNote/ 分开：否则两版会同步到同一个云端文件、互相覆盖数据
-const DEFAULT_REMOTE_PATH: &str = "/zhangjianzoutianya/litenote.json";
+/// 远端文件名（存于用户配置的 remotePath 目录下，默认 /Yijian/litenote.json）
+/// 刻意与原版的 /LiteNote/ 分开：否则两版会同步到同一个云端文件、互相覆盖数据。
+/// 以前默认值是上一任使用者的个人目录名，别人首次同步会在自己网盘里建出别人的目录。
+const DEFAULT_REMOTE_PATH: &str = "/Yijian/litenote.json";
 
 /// 后台定时同步间隔（秒）
 const SYNC_POLL_INTERVAL_SECS: u64 = 300;
@@ -59,6 +60,12 @@ struct TodoItemSync {
     recurrence_config: String,
     #[serde(default)]
     update_time: i64,
+    /// 软删除墓碑。合并规则是「并集 + update_time 新者胜」，真删行对它不可见，
+    /// 所以删除必须作为一个带更新时间的条目同步出去，否则本机删掉、云端留着，
+    /// 下一轮同步又把人家的条目塞回来（表现就是「删不掉」）。
+    /// `serde(default)` 保证老快照（没这个字段）读进来仍然是「未删除」。
+    #[serde(default)]
+    deleted: bool,
     #[serde(default)]
     create_time: i64,
     #[serde(default)]
@@ -159,7 +166,10 @@ fn build_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|e| format!("HTTP 客户端创建失败: {e}"))
 }
 
-/// 确保远端目录存在（逐级 MKCOL）。remote_path 形如 /zhangjianzoutianya/litenote.json
+/// 确保远端目录存在（逐级 MKCOL）。remote_path 形如 /Yijian/litenote.json
+///
+/// 必须在拉取之前调用：目录不存在时坚果云对 GET 回的是 409，
+/// 先建好目录，首次同步才会走到「404/409 → 直接上传本地」。
 fn ensure_remote_dir(client: &reqwest::blocking::Client, base: &str, auth: &reqwest::header::HeaderValue, remote_path: &str) -> Result<(), String> {
     // 取目录部分：去掉 remote_path 末尾的文件名
     let dir = match remote_path.trim_start_matches('/').rsplit_once('/') {
@@ -188,6 +198,10 @@ fn ensure_remote_dir(client: &reqwest::blocking::Client, base: &str, auth: &reqw
                 if !s.is_success() && s.as_u16() != 405 && s.as_u16() != 409 {
                     eprintln!("[webdav] MKCOL {} -> {}", cur, s);
                 }
+                // 凭据或路径本身不对时继续往下 PUT 也一定失败，直接报出来更好定位
+                if matches!(s.as_u16(), 400 | 401 | 403) {
+                    return Err(dav_error("创建远端目录", s, &cur));
+                }
             }
             Err(e) => eprintln!("[webdav] MKCOL {} 请求失败: {}", cur, e),
         }
@@ -195,10 +209,89 @@ fn ensure_remote_dir(client: &reqwest::blocking::Client, base: &str, auth: &reqw
     Ok(())
 }
 
+/// 把「远端文件路径」框里的内容归一化成一条纯路径。
+///
+/// 实测坚果云：有人把整条网址粘进这个框，拼出来就是 `.../dav/https://dav...` → 400 Bad Request。
+/// 更糟的是「逐级建目录」会把 `https:` 当成一层目录去 MKCOL，在别人网盘里建出垃圾目录。
+/// 所以在取配置这一步就把网址还原成路径，后面所有用法都只看到干净的 `/a/b.json`。
+fn normalize_remote_path(base: &str, raw: &str) -> String {
+    let rp = raw.trim().replace('\\', "/");
+    // 协议名大小写不敏感（有人从文档里粘的是 HTTPS://…），用 lowercase 判一次
+    let scheme = rp.to_ascii_lowercase();
+    if !scheme.starts_with("http://") && !scheme.starts_with("https://") {
+        return rp;
+    }
+    // 粘的网址正好以已填的服务器地址开头 → 剥掉这段前缀，剩下的就是路径
+    let b = base.trim().trim_end_matches('/');
+    if rp.len() > b.len() && rp[..b.len()].eq_ignore_ascii_case(b) {
+        return rp[b.len()..].to_string();
+    }
+    // 对不上：取 `://主机` 之后的路径部分
+    match rp.find("://") {
+        Some(i) => {
+            let rest = &rp[i + 3..];
+            match rest.find('/') {
+                Some(j) => rest[j..].to_string(),
+                None => String::new(),
+            }
+        }
+        None => rp,
+    }
+}
+
+/// 拼接服务器地址与已归一化的远端路径（逐段拼，顺手吃掉重复斜杠和结尾斜杠）。
 fn normalize_remote_url(base: &str, remote_path: &str) -> String {
-    let base = base.trim_end_matches('/');
-    let rp = remote_path.trim_start_matches('/');
-    format!("{base}/{rp}")
+    let mut out = base.trim().trim_end_matches('/').to_string();
+    for seg in remote_path.split('/').filter(|s| !s.is_empty()) {
+        out.push('/');
+        out.push_str(seg);
+    }
+    out
+}
+
+/// 「云端还没有这个文件」的两种表现，都必须放行去上传，否则首次同步永远传不上去：
+/// 404 = 目录在、文件不在；409 = 连父目录都不在（坚果云实测回的是 409，不是 404）。
+fn is_missing(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 404 | 409)
+}
+
+/// 报错里只留「主机 + 路径」：既够对方对照设置，也不会把地址栏里可能粘进的账号密码复述出来。
+fn target_for_message(target: &str) -> String {
+    match target.find("://") {
+        Some(i) => {
+            let rest = &target[i + 3..];
+            // 万一有人把账号密码也粘进地址栏，这里不会跟着报错原文复述一遍
+            let host_and_path = match rest.find('@') {
+                Some(k) => &rest[k + 1..],
+                None => rest,
+            };
+            format!("<{host_and_path}>")
+        }
+        None => format!("<{target}>"),
+    }
+}
+
+/// 把状态码翻译成能照着做的提示。
+/// 以前所有失败都是「下载失败，服务器返回 400 Bad Request 400 Bad Request」——
+/// 状态码重复两遍（两个占位符填了同一个值），而且对方看完不知道该改哪个框。
+fn dav_error(method: &str, status: reqwest::StatusCode, target: &str) -> String {
+    let hint = match status.as_u16() {
+        400 => "远端文件路径格式不对：这里只填以 / 开头的路径（例如 /Yijian/litenote.json），不要把整条网址粘进来",
+        401 => "账号或密码不对：坚果云要填「应用密码」（网页版 → 账户信息 → 安全选项 → 添加应用），不是登录密码",
+        403 => "这个路径没有访问权限，或者远端文件路径填成了目录（要指到 .json 文件，结尾不要带 /）",
+        404 => "服务器上没有这个路径：核对服务器地址（坚果云要以 /dav/ 结尾）与远端文件路径",
+        405 => "服务器不支持这个请求方法，请确认填的是 WebDAV 根地址",
+        409 => "远端目录还不存在",
+        410 => "服务器地址不对：坚果云要填 https://dav.jianguoyun.com/dav/",
+        423 => "该目录被锁住了，换个路径或稍后再试",
+        500..=599 => "服务器自己出错了，稍后再试；一直失败请检查网盘服务状态",
+        _ => "请核对服务器地址、账号密码与远端文件路径",
+    };
+    format!(
+        "{method} {} 失败：{}。{hint}",
+        target_for_message(target),
+        status,
+    )
 }
 
 fn basic_auth_header(user: &str, pass: &str) -> Result<reqwest::header::HeaderValue, String> {
@@ -226,10 +319,12 @@ fn read_local_todos<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<TodoItemSync>,
         return Ok(Vec::new());
     }
 
+    // 这里刻意不过滤 deleted：墓碑必须一起进快照，才能把「已删除」带到其它设备。
     let mut stmt = conn
         .prepare(
             "SELECT id, text, completed, pinned, color_id, due_date, reminded, \
-             is_recurring, recurrence_type, recurrence_config, update_time, create_time, completed_time \
+             is_recurring, recurrence_type, recurrence_config, update_time, create_time, completed_time, \
+             deleted \
              FROM todos",
         )
         .map_err(|e| format!("查询待办失败: {e}"))?;
@@ -250,6 +345,7 @@ fn read_local_todos<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<TodoItemSync>,
                 update_time: row.get(10)?,
                 create_time: row.get(11)?,
                 completed_time: row.get(12)?,
+                deleted: row.get::<_, i64>(13)? != 0,
             })
         })
         .map_err(|e| format!("读取待办失败: {e}"))?;
@@ -262,10 +358,18 @@ fn read_local_todos<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<TodoItemSync>,
 ///
 /// 只哈希待办数组本身：**不能**把 `updated_at` 一起算进去，否则每次调用都不同，
 /// 判断就永远失效了。
+///
+/// 比较前先按 (id, update_time) 排序：数组顺序不算「内容变了」。
+/// 不排的话，远端文件里的条目顺序只要和本地排序结果对不上，
+/// 每轮轮询都会误判成「云端落后」而白 PUT 一次（实测踩过）。
 fn fingerprint(todos: &[TodoItemSync]) -> String {
     use std::hash::{Hash, Hasher};
 
-    let json = serde_json::to_string(todos).unwrap_or_default();
+    let mut sorted: Vec<TodoItemSync> = todos.to_vec();
+    sorted.sort_by(|a, b| {
+        a.id.cmp(&b.id).then(a.update_time.cmp(&b.update_time))
+    });
+    let json = serde_json::to_string(&sorted).unwrap_or_default();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     json.hash(&mut hasher);
     format!("{:x}", hasher.finish())
@@ -283,14 +387,15 @@ fn overwrite_local_todos<R: Runtime>(app: &AppHandle<R>, sync: &SyncFile) -> Res
     for item in &sync.todos {
         conn.execute(
             "INSERT INTO todos \
-             (id, text, completed, pinned, color_id, due_date, reminded, is_recurring, recurrence_type, recurrence_config, update_time, create_time, completed_time) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) \
+             (id, text, completed, pinned, color_id, due_date, reminded, is_recurring, recurrence_type, recurrence_config, update_time, create_time, completed_time, deleted) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) \
              ON CONFLICT(id) DO UPDATE SET \
              text=excluded.text, completed=excluded.completed, pinned=excluded.pinned, \
              color_id=excluded.color_id, due_date=excluded.due_date, reminded=excluded.reminded, \
              is_recurring=excluded.is_recurring, recurrence_type=excluded.recurrence_type, \
              recurrence_config=excluded.recurrence_config, update_time=excluded.update_time, \
-             create_time=excluded.create_time, completed_time=excluded.completed_time",
+             create_time=excluded.create_time, completed_time=excluded.completed_time, \
+             deleted=excluded.deleted",
             rusqlite::params![
                 item.id,
                 item.text,
@@ -305,6 +410,7 @@ fn overwrite_local_todos<R: Runtime>(app: &AppHandle<R>, sync: &SyncFile) -> Res
                 item.update_time,
                 item.create_time,
                 item.completed_time,
+                item.deleted,
             ],
         )
         .map_err(|e| format!("写入待办失败: {e}"))?;
@@ -355,6 +461,9 @@ fn get_config<R: Runtime>(
     };
     let remote_path = ov.and_then(|o| o.remote_path.clone()).filter(|s| !s.is_empty())
         .unwrap_or_else(|| read_setting_string_app(app, "webdavRemotePath", DEFAULT_REMOTE_PATH));
+    // 归一化放在这里，而不是等到拼 URL 时：后面「逐级建远端目录」也要用这个值，
+    // 不先洗干净就会拿着一整条网址去建出 `.../https:` 这种垃圾目录。
+    let remote_path = normalize_remote_path(&url, &remote_path);
 
     if url.is_empty() || user.is_empty() {
         let missing = match (url.is_empty(), user.is_empty()) {
@@ -397,13 +506,13 @@ fn merge_todos(local: Vec<TodoItemSync>, remote: Vec<TodoItemSync>) -> Vec<TodoI
     merged
 }
 
-/// 双向同步：合并本地与远端，结果同时写回本地并上传云端。
-/// - 远端文件不存在（404）时，直接把本地上传。
-/// - 已存在时，逐条按 update_time 合并，避免多设备互相覆盖丢数据。
+/// 双向同步：每轮都先拉一次远端，再按差异决定要不要写本地 / 传云端。
+/// - 远端还没有快照（404/409）时，直接把本地上传。
+/// - 已有快照时逐条按 update_time 合并（含软删除墓碑），避免多设备互相覆盖丢数据。
+/// - 两边内容一致时只发这一个 GET，不写盘也不上传。
 fn sync_to_webdav<R: Runtime>(
     app: &AppHandle<R>,
     ov: Option<&ConfigOverride>,
-    force: bool,
 ) -> Result<(), String> {
     let (url, user, pass, remote_path, _enabled) = get_config(app, ov)?;
 
@@ -413,20 +522,11 @@ fn sync_to_webdav<R: Runtime>(
 
     let local = read_local_todos(app)?;
 
-    /*
-      内容变了才同步。
-
-      以前是后台每 5 分钟无条件走一遍「拉取 → 合并 → 写回 → 上传」，
-      内容没动也照发请求。现在先比内容指纹：与上次同步时一致就直接返回，
-      一个网络请求都不发。
-
-      手动「立即同步」传 force=true 跳过判断——多设备场景下即使本地没改，
-      也要能主动把别的设备改动拉下来。
-    */
-    if !force && read_setting_string_app(app, "webdavLastHash", "") == fingerprint(&local) {
-        return Ok(());
-    }
-
+    // 每轮都先 GET 一次远端：本地没改 ≠ 云端没改。
+    // 以前这里用「本地指纹 == 上次同步指纹」当闸门，一致就一个请求都不发（为省流量定的），
+    // 结果界面上写的「每 5 分钟自动双向同步」只做了一半——
+    // 另一台设备的改动要等到重启或手动点「立即同步」才进得来。
+    // 现在固定每轮一次 GET（快照就几 KB），真正的写盘/上传再按差异决定，见下面三方指纹比对。
     // 尝试拉取远端
     let remote_todos = match client
         .get(&full)
@@ -446,58 +546,71 @@ fn sync_to_webdav<R: Runtime>(
                 }
             }
         }
-        Ok(resp) if resp.status().as_u16() == 404 => {
-            eprintln!("[webdav] sync: 远端文件不存在，将直接上传本地");
+        Ok(resp) if is_missing(resp.status()) => {
+            eprintln!("[webdav] sync: 远端还没有快照（{}），将直接上传本地", resp.status());
             Vec::new()
         }
         Ok(resp) => {
-            return Err(format!(
-                "下载失败，服务器返回 {} {}",
-                resp.status(),
-                resp.status()
-            ));
+            return Err(dav_error("下载", resp.status(), &full));
         }
         Err(e) => return Err(format!("下载请求失败: {e}")),
     };
 
+    let local_fp = fingerprint(&local);
+    let remote_fp = fingerprint(&remote_todos);
     let merged = merge_todos(local, remote_todos);
-
-    // 写回本地（合并结果）
-    overwrite_local_todos(app, &SyncFile {
-        version: 1,
-        updated_at: now_ms(),
-        todos: merged.clone(),
-    })?;
-
-    // 上传前先记下合并结果的指纹（merged 下面会被移进 SyncFile）
     let merged_fp = fingerprint(&merged);
 
-    // 上传合并结果到云端
-    ensure_remote_dir(&client, &url, &auth, &remote_path)?;
-    let body = serde_json::to_string(&SyncFile {
-        version: 1,
-        updated_at: now_ms(),
-        todos: merged,
-    })
-    .map_err(|e| format!("序列化失败: {e}"))?;
-
-    eprintln!("[webdav] sync: PUT {}", full);
-    let resp = client
-        .put(&full)
-        .header(reqwest::header::AUTHORIZATION, auth.clone())
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
-        .send()
-        .map_err(|e| format!("上传请求失败: {e}"))?;
-
-    if !resp.status().is_success() {
-        eprintln!("[webdav] sync: 失败状态码 {}", resp.status());
-        return Err(format!("上传失败，服务器返回 {} {}", resp.status(), resp.status()));
+    // 两边内容一致（合并结果与双方都相同）→ 一个字节都不用写，也不建目录。
+    // 但「上次同步」时间还是要记：手动点按钮时他要能看到时间变了。
+    if merged_fp == local_fp && merged_fp == remote_fp {
+        set_last_sync(app, now_ms())?;
+        return Ok(());
     }
-    eprintln!("[webdav] sync: 成功");
 
-    // 记下本次同步后的内容指纹，供下次判断「内容有没有变」
-    let _ = write_setting_string(app, "webdavLastHash", &merged_fp);
+    // 确定要写云端了才建目录：只读轮询不该在他网盘里凭空建出文件夹。
+    // 首次同步的 GET 会因为父目录不存在回 409，这里补建。
+    ensure_remote_dir(&client, &url, &auth, &remote_path)?;
+
+    if merged_fp != local_fp {
+        // 本地落后（或云端有本地没有的条目）→ 写回本地
+        overwrite_local_todos(app, &SyncFile {
+            version: 1,
+            updated_at: now_ms(),
+            todos: merged.clone(),
+        })?;
+        // 后台轮询写库后必须通知前端，否则列表还是旧的（以前只有启动拉取发这个事件）
+        let _ = app.emit(
+            TODOS_UPDATED_EVENT,
+            serde_json::json!({ "ts": now_ms(), "source": "webdav-poll" }),
+        );
+    }
+
+    if merged_fp != remote_fp {
+        // 云端落后 → 上传合并结果
+        let body = serde_json::to_string(&SyncFile {
+            version: 1,
+            updated_at: now_ms(),
+            todos: merged,
+        })
+        .map_err(|e| format!("序列化失败: {e}"))?;
+
+        eprintln!("[webdav] sync: PUT {}", full);
+        let resp = client
+            .put(&full)
+            .header(reqwest::header::AUTHORIZATION, auth.clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .map_err(|e| format!("上传请求失败: {e}"))?;
+
+        if !resp.status().is_success() {
+            eprintln!("[webdav] sync: 失败状态码 {}", resp.status());
+            return Err(dav_error("上传", resp.status(), &full));
+        }
+    }
+    eprintln!("[webdav] sync: 完成");
+
     set_last_sync(app, now_ms())?;
     Ok(())
 }
@@ -516,16 +629,19 @@ fn download_from_webdav<R: Runtime>(app: &AppHandle<R>, ov: Option<&ConfigOverri
         .send()
         .map_err(|e| format!("下载请求失败: {e}"))?;
 
-    if !resp.status().is_success() {
-        return Err(format!("下载失败，服务器返回 {} {}", resp.status(), resp.status()));
+    let status = resp.status();
+    if is_missing(status) {
+        return Err("云端还没有快照：请先在数据更全的那台设备上点「立即同步」把待办传上去，再回来恢复".into());
+    }
+    if !status.is_success() {
+        return Err(dav_error("下载", status, &full));
     }
 
     let body = resp.text().map_err(|e| format!("读取响应失败: {e}"))?;
     let sync_file: SyncFile = serde_json::from_str(&body).map_err(|e| format!("解析远端数据失败: {e}"))?;
 
     overwrite_local_todos(app, &sync_file)?;
-    // 恢复后的内容即远端内容，直接记为已同步状态，避免紧接着又被自动同步上传一遍
-    let _ = write_setting_string(app, "webdavLastHash", &fingerprint(&sync_file.todos));
+    // 恢复后本地内容与云端一致，下一轮轮询的三方指纹比对会自己判出「没差异」，不用另存标记
     set_last_sync(app, now_ms())?;
     Ok(())
 }
@@ -547,19 +663,16 @@ fn sync_tick<R: Runtime>(app: &AppHandle<R>) {
     if !read_setting_bool_app(app, "webdavEnabled", false) {
         return;
     }
-    if let Err(e) = sync_to_webdav(app, None, false) {
+    if let Err(e) = sync_to_webdav(app, None) {
         eprintln!("[LiteNote] WebDAV 后台同步失败: {e}");
     }
     // set_last_sync 由 sync_to_webdav 内部在成功时调用
 }
 
-/// 启动时自动拉取一次远端（用户要求：每次打开轻签就拉一次）。
+/// 启动时自动拉取一次远端（用户要求：每次打开一笺就拉一次）。
 ///
-/// 用 `force = true` 跳过内容指纹判断 —— 这里的目的正是"把别的设备的改动拉下来"，
-/// 本地内容没变也必须走一遍完整双向同步（按 update_time 合并，不会覆盖本地更新的条目）。
-///
-/// 合并结果会写回本地数据库，所以完成后发一个待办更新事件，
-/// 前端 todoStore 已经在监听这个事件，收到就会重新读库。
+/// 走的是和后台轮询完全同一条路径：先 GET，再按差异决定写本地 / 传云端。
+/// 真写了本地会由 sync_to_webdav 自己发待办更新事件，这里不再重复发一次。
 pub fn startup_pull<R: Runtime>(app: &AppHandle<R>) {
     if !read_setting_bool_app(app, "webdavEnabled", false) {
         return;
@@ -571,14 +684,8 @@ pub fn startup_pull<R: Runtime>(app: &AppHandle<R>) {
         tokio::time::sleep(Duration::from_secs(6)).await;
 
         let h = handle.clone();
-        let _ = tokio::task::spawn_blocking(move || match sync_to_webdav(&h, None, true) {
-            Ok(_) => {
-                eprintln!("[webdav] 启动自动拉取完成");
-                let _ = h.emit(
-                    TODOS_UPDATED_EVENT,
-                    serde_json::json!({ "ts": now_ms(), "source": "webdav-startup" }),
-                );
-            }
+        let _ = tokio::task::spawn_blocking(move || match sync_to_webdav(&h, None) {
+            Ok(_) => eprintln!("[webdav] 启动自动拉取完成"),
             Err(e) => eprintln!("[LiteNote] 启动自动拉取失败: {e}"),
         })
         .await;
@@ -702,13 +809,17 @@ pub struct WebdavTestPayload {
     pub remote_path: Option<String>,
 }
 
-/// 测试连接（PROPFIND 根目录）。直接使用传入的临时配置，避免把不完整配置写库。
-/// 若传入的 pass 为空且数据库已存有密码，则回退使用已保存密码。
+/// 测试连接：先 PROPFIND 根目录验地址与凭据，再按当前填的远端路径只读探一次文件。
+/// 直接使用传入的临时配置，避免把不完整配置写库；若 pass 为空则回退已保存密码。
+///
+/// 以前只探根目录就回「连接成功」，所以「测试连接成功、一点同步就 400」根本查不下去——
+/// 根目录能列出来不代表那个路径能用。这里全程只读（PROPFIND / GET），不建目录也不写文件。
 #[tauri::command]
 pub async fn webdav_test(app: AppHandle, payload: WebdavTestPayload) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let url = payload.url.trim();
         let user = payload.user.trim();
+        let remote_path = payload.remote_path.unwrap_or_default();
         let mut pass = payload.pass;
         if pass.is_empty() {
             let saved = read_setting_string_app(&app, "webdavPass", "");
@@ -727,16 +838,39 @@ pub async fn webdav_test(app: AppHandle, payload: WebdavTestPayload) -> Result<S
             .map_err(|e| format!("构造 PROPFIND 方法失败: {e}"))?;
         let resp = client
             .request(propfind, &root)
-            .header(reqwest::header::AUTHORIZATION, auth)
+            .header(reqwest::header::AUTHORIZATION, auth.clone())
             .header("Depth", "0")
             .send()
             .map_err(|e| format!("连接测试失败: {e}"))?;
-        eprintln!("[webdav] test: 状态码 {}", resp.status());
-        if resp.status().is_success() || resp.status().as_u16() == 207 {
-            Ok("连接成功".into())
-        } else {
-            Err(format!("连接失败，服务器返回 {} {}", resp.status(), resp.status()))
+        let root_status = resp.status();
+        eprintln!("[webdav] test: 根目录状态码 {}", root_status);
+        if !root_status.is_success() && root_status.as_u16() != 207 {
+            return Err(dav_error("列根目录", root_status, &root));
         }
+
+        let full = normalize_remote_url(url, &normalize_remote_path(url, &remote_path));
+        if full == root {
+            return Err("远端文件路径没填或指向目录：要填到 .json 文件，例如 /Yijian/litenote.json".into());
+        }
+        eprintln!("[webdav] test: GET {}", full);
+        let resp = client
+            .get(&full)
+            .header(reqwest::header::AUTHORIZATION, auth)
+            .send()
+            .map_err(|e| format!("探测远端文件失败: {e}"))?;
+        let status = resp.status();
+        eprintln!("[webdav] test: 远端文件状态码 {}", status);
+        if status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            return Ok(match serde_json::from_str::<SyncFile>(&body) {
+                Ok(sf) => format!("连接成功，云端已有 {} 条待办", sf.todos.len()),
+                Err(_) => "连接成功，但云端这个文件不是本程序导出的快照，同步时会按条目合并".into(),
+            });
+        }
+        if is_missing(status) {
+            return Ok("连接成功，云端还没有快照：点「立即同步」会把本地待办传上去（远端目录不存在会自动创建）".into());
+        }
+        Err(dav_error("探测远端文件", status, &full))
     })
     .await
     .map_err(|e| format!("后台任务失败: {e}"))?
@@ -752,8 +886,7 @@ pub async fn webdav_sync_now(app: AppHandle, payload: Option<WebdavTestPayload>)
         pass: Some(p.pass),
         remote_path: p.remote_path,
     });
-    // force=true：手动「立即同步」总是走完整流程（可主动拉取其它设备的改动）
-    tauri::async_runtime::spawn_blocking(move || match sync_to_webdav(&app, ov.as_ref(), true) {
+    tauri::async_runtime::spawn_blocking(move || match sync_to_webdav(&app, ov.as_ref()) {
         Ok(_) => Ok("同步成功".into()),
         Err(e) => Err(e),
     })

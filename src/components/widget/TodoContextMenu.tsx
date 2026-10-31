@@ -4,7 +4,7 @@ import type { MessageKey } from "@/i18n/messages";
 import { t } from "@/i18n";
 import { TODO_COLOR_IMPORTANCE_ORDER } from "@/lib/todoImportanceColors";
 import { COLOR_DOT_STYLE } from "@/lib/itemColors";
-import { todayEnd, tomorrowEnd, weekendEnd, formatDueDate } from "@/lib/dueDate";
+import { formatDueDate } from "@/lib/dueDate";
 import type { TodoColorId, RecurrenceType } from "@/types/todo";
 
 const COLOR_TITLE_KEY: Record<TodoColorId, MessageKey> = {
@@ -39,7 +39,6 @@ interface TodoContextMenuProps {
   onDelete: () => void;
   onToggleDone: () => void;
   onPickColor: (c: TodoColorId) => void;
-  onPickDueDate: (ts: number) => void;
   onOpenCustomDueDate: () => void;
   onClearDueDate: () => void;
   onSetRecurrence: (type: RecurrenceType) => void;
@@ -61,7 +60,6 @@ export function TodoContextMenu({
   onDelete,
   onToggleDone,
   onPickColor,
-  onPickDueDate,
   onOpenCustomDueDate,
   onClearDueDate,
   onSetRecurrence,
@@ -174,38 +172,6 @@ export function TodoContextMenu({
                   <span className="text-sky-600">{dueLabel}</span>
                 ) : null}
               </div>
-              <div className="flex items-center gap-1.5 px-2 pb-1" style={{ fontSize: 11 }}>
-                <button
-                  type="button"
-                  className={quickBtn}
-                  onClick={() => {
-                    onPickDueDate(todayEnd());
-                    onClose();
-                  }}
-                >
-                  {mk("dueToday")}
-                </button>
-                <button
-                  type="button"
-                  className={quickBtn}
-                  onClick={() => {
-                    onPickDueDate(tomorrowEnd());
-                    onClose();
-                  }}
-                >
-                  {mk("dueTomorrow")}
-                </button>
-                <button
-                  type="button"
-                  className={quickBtn}
-                  onClick={() => {
-                    onPickDueDate(weekendEnd());
-                    onClose();
-                  }}
-                >
-                  {mk("dueWeekend")}
-                </button>
-              </div>
               <button
                 type="button"
                 className={item}
@@ -281,11 +247,8 @@ export function TodoContextMenu({
         </button>
         {!isRecurring || !completed ? (
           <button type="button" className={item} role="menuitem" onClick={() => { onToggleDone(); onClose(); }}>
-            {completed
-              ? mk("menuUndone")
-              : isRecurring
-                ? mk("menuDoneCycle")
-                : mk("menuDone")}
+            {/* 完成即终结（循环规则一并清掉），所以不再区分「本轮」 */}
+            {completed ? mk("menuUndone") : mk("menuDone")}
           </button>
         ) : null}
       </div>

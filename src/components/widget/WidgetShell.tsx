@@ -1169,7 +1169,6 @@ export function WidgetShell() {
           onDelete={menuActions.onDelete}
           onToggleDone={menuActions.onToggleDone}
           onPickColor={(c: TodoColorId) => menuActions.onPickColor(c)}
-          onPickDueDate={menuActions.onPickDueDate}
           onOpenCustomDueDate={menuActions.onOpenCustomDueDate}
           onClearDueDate={menuActions.onClearDueDate}
           onSetRecurrence={menuActions.onSetRecurrence}
@@ -1220,6 +1219,8 @@ export function WidgetShell() {
         locale={locale}
         open={recurrencePicker !== null}
         recurrenceType={recurrencePicker?.type ?? "none"}
+        initialConfig={recurrencePicker?.config ?? ""}
+        initialDueDate={recurrencePicker?.dueDate ?? 0}
         onConfirm={handleRecurrenceConfirm}
         onCancel={handleRecurrenceCancel}
       />

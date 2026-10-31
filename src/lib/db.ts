@@ -22,7 +22,8 @@ export type ThemeId = "glass" | "dark" | "light" | "yellow" | "gray" | "pink";
 export type ShortcutKey =
   | "shortcutToggleWindow"
   | "shortcutFocusMode"
-  | "shortcutWindowLock";
+  | "shortcutWindowLock"
+  | "shortcutDesktopPin";
 
 /** 所有设置项的默认值，作为唯一真实来源 */
 export const DEFAULT_SETTINGS = {
@@ -56,12 +57,13 @@ export const DEFAULT_SETTINGS = {
   shortcutToggleWindow: "CmdOrCtrl+Shift+L",
   shortcutFocusMode: "CmdOrCtrl+Shift+F",
   shortcutWindowLock: "CmdOrCtrl+Shift+P",
+  shortcutDesktopPin: "CmdOrCtrl+Shift+D",
   // WebDAV 同步（密码不在此处，由 Rust 端加密存储）
   webdavEnabled: false,
   webdavUrl: "",
   webdavUser: "",
   // 与 Rust 侧 DEFAULT_REMOTE_PATH 保持一致，且与原版 /LiteNote/ 分开
-  webdavRemotePath: "/zhangjianzoutianya/litenote.json",
+  webdavRemotePath: "/Yijian/litenote.json",
 };
 
 /** 内容字号可选范围（px） */
@@ -89,6 +91,7 @@ export interface AppSettings {
   readonly shortcutToggleWindow: string;
   readonly shortcutFocusMode: string;
   readonly shortcutWindowLock: string;
+  readonly shortcutDesktopPin: string;
   readonly webdavEnabled: boolean;
   readonly webdavUrl: string;
   readonly webdavUser: string;
@@ -137,7 +140,21 @@ const EXPECTED_TODO_COLUMNS: Array<{ name: string; def: string }> = [
   { name: "is_recurring", def: "INTEGER NOT NULL DEFAULT 0" },
   { name: "recurrence_type", def: "TEXT NOT NULL DEFAULT 'none'" },
   { name: "recurrence_config", def: "TEXT NOT NULL DEFAULT ''" },
+  /*
+    软删除标记。同步的合并规则是「按 id 取并集 + update_time 新者胜」，
+    真删行对它是不可见的：本机删掉、云端还留着，下一轮同步就把那条塞回来了
+    ——表现就是「删不掉，几分钟后又出现」。所以删除只打标记，让墓碑带着
+    一个更新的 update_time 参与合并，才能把「已删除」传到其它设备。
+  */
+  { name: "deleted", def: "INTEGER NOT NULL DEFAULT 0" },
 ];
+
+/**
+ * 墓碑保留 30 天后彻底清掉，避免快照里越积越多看不见的行。
+ * 窗口必须长于任何一台设备的离线时长：那台设备带着旧的存活副本重新上线时，
+ * 墓碑已经不在了，就会被当成「新增」合并回来。
+ */
+const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 async function initTables(db: Database): Promise<void> {
   // 1. 建表（仅新库生效，老库已存在则跳过）
@@ -164,6 +181,11 @@ async function initTables(db: Database): Promise<void> {
 
   // 2. 自动补齐缺失列（老库升级用，不影响已有数据）
   await ensureColumns(db);
+
+  // 3. 清掉过期墓碑（保留窗口见 TOMBSTONE_RETENTION_MS）
+  await db.execute("DELETE FROM todos WHERE deleted=1 AND update_time < $1", [
+    Date.now() - TOMBSTONE_RETENTION_MS,
+  ]);
 
   console.log("[LiteNote] 表结构检查完毕");
 }
@@ -209,7 +231,7 @@ export async function loadTodos(): Promise<TodoItem[]> {
       recurrence_type: string;
       recurrence_config: string;
     }>
-  >("SELECT * FROM todos ORDER BY sort_order ASC, update_time DESC");
+  >("SELECT * FROM todos WHERE deleted = 0 ORDER BY sort_order ASC, update_time DESC");
   return rows.map((r) => ({
     id: r.id,
     text: r.text,
@@ -276,12 +298,14 @@ export async function updateTodo(item: TodoItem): Promise<void> {
 
 export async function removeTodo(id: string): Promise<void> {
   const db = await getDb();
-  await db.execute("DELETE FROM todos WHERE id=$1", [id]);
+  // 只打标记不真删，理由见 EXPECTED_TODO_COLUMNS 里 deleted 的注释。
+  // update_time 必须一起刷新：合并靠它判新旧，不刷就压不住其它设备上的旧副本。
+  await db.execute("UPDATE todos SET deleted=1, update_time=$2 WHERE id=$1", [id, Date.now()]);
 }
 
 export async function clearCompletedTodos(): Promise<void> {
   const db = await getDb();
-  await db.execute("DELETE FROM todos WHERE completed=1");
+  await db.execute("UPDATE todos SET deleted=1, update_time=$1 WHERE completed=1 AND deleted=0", [Date.now()]);
 }
 
 // ──────────────── Settings CRUD ────────────────

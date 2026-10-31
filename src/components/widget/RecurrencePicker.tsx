@@ -1,239 +1,480 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Locale } from "@/i18n";
 import type { MessageKey } from "@/i18n/messages";
 import { t } from "@/i18n";
-import type { RecurrenceType } from "@/types/todo";
+import type { RecurrenceConfig, RecurrenceType } from "@/types/todo";
+import { useSettingsStore } from "@/stores/settingsStore";
+import {
+  DAILY_TIME_LIMIT,
+  MONTHLY_DAY_LIMIT,
+  PER_DAY_TIME_LIMIT,
+  computeNextDueDate,
+  formatSlot,
+  normalizeRecurrence,
+} from "@/lib/recurrence";
 
 interface RecurrencePickerProps {
   locale: Locale;
   open: boolean;
   recurrenceType: RecurrenceType;
+  /** 现有规则，重开面板时回填 */
+  initialConfig: string;
+  /** 现有提醒时刻，老规则里没有时刻时用它兜底 */
+  initialDueDate: number;
   onConfirm: (type: RecurrenceType, config: string, dueDate: number) => void;
   onCancel: () => void;
 }
 
-const WEEKDAYS_ZH = ["日", "一", "二", "三", "四", "五", "六"];
-const WEEKDAYS_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const WEEKDAY_ZH = ["日", "一", "二", "三", "四", "五", "六"];
+const WEEKDAY_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** 面板里星期从左到右的顺序：周一开头 */
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0];
 
-/**
- * 计算初始 dueDate 时间戳
- * - daily: 今天或明天的指定时间（如果今天该时间已过则用明天）
- * - weekly: 下一个指定星期几的指定时间
- * - monthly: 下一个指定日期的指定时间
- */
-function computeInitialDueDate(
-  type: RecurrenceType,
-  hour: number,
-  minute: number,
-  weekday?: number,
-  dayOfMonth?: number,
-): number {
-  const now = new Date();
+const ACCENT = "#0ea5e9";
 
-  switch (type) {
-    case "daily": {
-      const target = new Date(now);
-      target.setHours(hour, minute, 0, 0);
-      if (target.getTime() <= now.getTime()) {
-        target.setDate(target.getDate() + 1);
-      }
-      return target.getTime();
-    }
-    case "weekly": {
-      const wd = weekday ?? now.getDay();
-      const target = new Date(now);
-      target.setHours(hour, minute, 0, 0);
+/** 下一格默认时间：在最后一个时刻上 +1 小时，比复制同一个数好用 */
+function nextTimeAfter(last: string): string {
+  const [h, m] = last.split(":").map(Number);
+  const total = ((h || 0) + 1) * 60 + (m || 0);
+  return formatSlot(Math.floor((total % 1440) / 60), total % 60);
+}
 
-      const currentDay = target.getDay();
-      if (wd === currentDay && target.getTime() > now.getTime()) {
-        // 今天就是目标日且时间未过
-        return target.getTime();
-      }
-      // 找到下一个目标日
-      let daysUntil = wd - currentDay;
-      if (daysUntil <= 0) daysUntil += 7;
-      target.setDate(target.getDate() + daysUntil);
-      return target.getTime();
-    }
-    case "monthly": {
-      const dom = dayOfMonth ?? now.getDate();
-
-      // 构建本月目标日（手动年月避免 setMonth 滚动）
-      let y = now.getFullYear();
-      let m = now.getMonth();
-      const maxDayThisMonth = new Date(y, m + 1, 0).getDate();
-      const d = Math.min(dom, maxDayThisMonth);
-
-      let target = new Date(y, m, d, hour, minute, 0, 0);
-
-      if (target.getTime() <= now.getTime()) {
-        // 推到下个月
-        m += 1;
-        if (m > 11) {
-          m = 0;
-          y += 1;
-        }
-        const maxDayNext = new Date(y, m + 1, 0).getDate();
-        const nd = Math.min(dom, maxDayNext);
-        target = new Date(y, m, nd, hour, minute, 0, 0);
-      }
-      return target.getTime();
-    }
-    default:
-      return 0;
-  }
+function slotsToText(slots: Array<{ hour: number; minute: number }>): string[] {
+  return slots.map((s) => formatSlot(s.hour, s.minute));
 }
 
 export function RecurrencePicker({
   locale,
   open,
   recurrenceType,
+  initialConfig,
+  initialDueDate,
   onConfirm,
   onCancel,
 }: RecurrencePickerProps) {
-  const now = new Date();
-  const [hour, setHour] = useState(now.getHours());
-  const [minute, setMinute] = useState(0);
-  const [weekday, setWeekday] = useState(now.getDay());
-  const [dayOfMonth, setDayOfMonth] = useState(now.getDate());
+  const isZh = locale === "zh-CN";
+  const wdLabels = isZh ? WEEKDAY_ZH : WEEKDAY_EN;
+  const isDaily = recurrenceType === "daily";
+  const theme = useSettingsStore((s) => s.theme);
+  const scheme: "dark" | "light" = theme === "dark" || theme === "glass" ? "dark" : "light";
+
+  const [times, setTimes] = useState<string[]>(["10:00"]);
+  const [days, setDays] = useState<number[]>([]);
+  const [dayTimes, setDayTimes] = useState<Record<number, string[]>>({});
+  const [active, setActive] = useState<number>(-1);
+  const [pendingDay, setPendingDay] = useState<string>("");
+
+  // 每次打开都按当前待办的规则回填，否则会把上一次编辑的残留带进来
+  useEffect(() => {
+    if (!open) return;
+    const now = new Date();
+    const anchorMs =
+      initialDueDate > 0
+        ? initialDueDate
+        : new Date(now.getFullYear(), now.getMonth(), now.getDate(), 10, 0, 0, 0).getTime();
+    const norm = normalizeRecurrence(recurrenceType, initialConfig, anchorMs);
+
+    if (isDaily) {
+      const t = slotsToText(norm.specs[0]?.times ?? []);
+      setTimes(t.length ? t : ["10:00"]);
+      setDays([]);
+      setDayTimes({});
+      setActive(-1);
+    } else {
+      const keys = norm.specs.map((s) => s.key);
+      const map: Record<number, string[]> = {};
+      for (const s of norm.specs) map[s.key] = slotsToText(s.times);
+      if (!keys.length) {
+        // 全新规则：先落在今天上，免得面板开出来是空的
+        const d = recurrenceType === "weekly" ? now.getDay() : now.getDate();
+        keys.push(d);
+        map[d] = ["10:00"];
+      }
+      setDays(keys);
+      setDayTimes(map);
+      setActive(keys[0]);
+    }
+    setPendingDay("");
+  }, [open, recurrenceType, initialConfig, initialDueDate, isDaily]);
 
   if (!open) return null;
 
   const mk = (key: MessageKey) => t(locale, key);
-  const isZh = locale === "zh-CN";
-  const wdLabels = isZh ? WEEKDAYS_ZH : WEEKDAYS_EN;
+  const timeLimit = isDaily ? DAILY_TIME_LIMIT : PER_DAY_TIME_LIMIT;
 
-  const handleConfirm = () => {
-    const dueDate = computeInitialDueDate(
-      recurrenceType,
-      hour,
-      minute,
-      recurrenceType === "weekly" ? weekday : undefined,
-      recurrenceType === "monthly" ? dayOfMonth : undefined,
-    );
+  const activeList = isDaily ? times : (dayTimes[active] ?? ["10:00"]);
 
-    let config: Record<string, unknown> = { interval: 1 };
-    if (recurrenceType === "weekly") {
-      config = { interval: 1, days: [weekday] };
-    } else if (recurrenceType === "monthly") {
-      config = { interval: 1, dayOfMonth };
-    }
-
-    onConfirm(recurrenceType, JSON.stringify(config), dueDate);
+  const setActiveList = (next: string[]) => {
+    if (isDaily) setTimes(next);
+    else setDayTimes((prev) => ({ ...prev, [active]: next }));
   };
 
-  const btnBase =
-    "inline-flex h-8 w-8 items-center justify-center rounded-md border text-sm transition";
-  const btnActive =
-    `${btnBase} border-sky-400 bg-sky-100 text-sky-700`;
-  const btnNormal =
-    `${btnBase} border-neutral-300 text-neutral-700 hover:bg-neutral-100`;
+  const addTimeRow = () => {
+    if (activeList.length >= timeLimit) return;
+    const last = activeList[activeList.length - 1] ?? "10:00";
+    setActiveList([...activeList, nextTimeAfter(last)]);
+  };
 
-  const hourOptions = Array.from({ length: 24 }, (_, i) => i);
-  const minOptions = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+  const removeTimeRow = (index: number) => {
+    // 允许删到空：清空后由「确定」禁用 + 提示语兜住，重新设置靠清空/添加
+    setActiveList(activeList.filter((_, i) => i !== index));
+  };
+
+  const clearTimes = () => setActiveList([]);
+
+  /**
+   * 星期胶囊三态：点未选中的 = 选上并开始编辑它；点已选中但不在编辑的 = 只切过去编辑；
+   * 再点一次正在编辑的那个才是取消这天。
+   */
+  const toggleWeekday = (d: number) => {
+    if (days.includes(d)) {
+      if (active === d) {
+        const next = days.filter((x) => x !== d);
+        setDays(next);
+        setActive(next[0] ?? -1);
+      } else {
+        setActive(d);
+      }
+      return;
+    }
+    setDays([...days, d].sort((a, b) => a - b));
+    setDayTimes((prev) =>
+      prev[d]?.length ? prev : { ...prev, [d]: activeList.length ? [...activeList] : ["10:00"] },
+    );
+    setActive(d);
+  };
+
+  const addDayOfMonth = () => {
+    const v = Math.floor(Number(pendingDay));
+    if (!Number.isFinite(v) || v < 1 || v > 31) return;
+    if (days.includes(v) || days.length >= MONTHLY_DAY_LIMIT) return;
+    setDays([...days, v].sort((a, b) => a - b));
+    setDayTimes((prev) => ({ ...prev, [v]: prev[v]?.length ? prev[v] : [...activeList] }));
+    setActive(v);
+    setPendingDay("");
+  };
+
+  const removeDayOfMonth = (d: number) => {
+    const next = days.filter((x) => x !== d);
+    setDays(next);
+    if (active === d) setActive(next[0] ?? -1);
+  };
+
+  const handleConfirm = () => {
+    const cfg: RecurrenceConfig = { interval: 1 };
+    if (isDaily) {
+      cfg.times = activeList;
+    } else if (recurrenceType === "weekly") {
+      cfg.days = days;
+      cfg.dayTimes = Object.fromEntries(
+        days.map((d) => [String(d), dayTimes[d] ?? []]),
+      );
+    } else {
+      cfg.daysOfMonth = days;
+      cfg.dayOfMonth = days[0];
+      cfg.dayTimes = Object.fromEntries(
+        days.map((d) => [String(d), dayTimes[d] ?? []]),
+      );
+    }
+    const config = JSON.stringify(cfg);
+    const now = Date.now();
+    const dueDate = computeNextDueDate(now, recurrenceType, config, now) || initialDueDate;
+    onConfirm(recurrenceType, config, dueDate);
+  };
+
+  /**
+   * 每一天都至少得有一个时间点才能确定 —— 否则「清空时间」后保存下来的是
+   * 一条没有提醒时刻的规则，看起来设上了其实不会响。
+   */
+  const canConfirm = isDaily
+    ? activeList.length > 0
+    : days.length > 0 &&
+      active >= 0 &&
+      days.every((d) => (dayTimes[d] ?? []).length > 0);
+
+  const labelStyle: React.CSSProperties = { color: "var(--ln-theme-text-secondary)" };
+  const fieldStyle: React.CSSProperties = {
+    borderColor: "var(--ln-theme-border)",
+    background: "var(--ln-theme-surface)",
+    color: "var(--ln-theme-text)",
+    colorScheme: scheme,
+  };
+  const btnBase = "flex items-center justify-center rounded-md border text-[12px] transition";
+
+  const titleKey = (
+    isDaily ? "recurTitleDaily" : recurrenceType === "weekly" ? "recurTitleWeekly" : "recurTitleMonthly"
+  ) as MessageKey;
 
   return (
     <div
-      className="fixed inset-0 z-[170] flex items-center justify-center bg-black/30"
+      className="fixed inset-0 z-[170] flex items-center justify-center"
+      style={{ background: "var(--ln-theme-overlay)" }}
       onClick={onCancel}
     >
       <div
-        className="mx-4 w-80 rounded-xl border border-neutral-200 bg-white p-4 shadow-xl"
+        className="ln-recur-panel max-h-[92%] w-[296px] overflow-y-auto rounded-xl p-3 shadow-2xl"
+        style={{
+          background: "var(--ln-theme-bg)",
+          backdropFilter: "var(--ln-theme-backdrop)",
+          WebkitBackdropFilter: "var(--ln-theme-backdrop)",
+          border: "1px solid var(--ln-theme-border)",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 className="mb-3 text-sm font-semibold text-neutral-900">
-          {mk(`recurTitle${recurrenceType.charAt(0).toUpperCase() + recurrenceType.slice(1)}` as MessageKey)}
+        <h3
+          className="mb-2.5 text-[13px] font-semibold"
+          style={{ color: "var(--ln-theme-text)" }}
+        >
+          {mk(titleKey)}
         </h3>
 
-        {/* 每周：星期选择 */}
+        {/* 每周：星期多选。选中描边，正在编辑实心 */}
         {recurrenceType === "weekly" ? (
-          <div className="mb-3">
-            <div className="mb-1.5 text-xs text-neutral-500">{mk("recurPickDay")}</div>
+          <div className="mb-2.5">
+            <div className="mb-1 text-[11px]" style={labelStyle}>
+              {mk("recurPickDay")}
+            </div>
             <div className="flex gap-1">
-              {[1, 2, 3, 4, 5, 6, 0].map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  className={weekday === d ? btnActive : btnNormal}
-                  onClick={() => setWeekday(d)}
-                >
-                  {wdLabels[d]}
-                </button>
-              ))}
+              {WEEK_ORDER.map((d) => {
+                const selected = days.includes(d);
+                const editing = active === d;
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => toggleWeekday(d)}
+                    className={`${btnBase} h-7 flex-1`}
+                    style={{
+                      borderColor: selected ? ACCENT : "var(--ln-theme-border)",
+                      background: editing ? ACCENT : selected ? "rgba(14,165,233,0.14)" : "var(--ln-theme-surface)",
+                      color: editing ? "#fff" : selected ? ACCENT : "var(--ln-theme-text-secondary)",
+                      fontWeight: selected ? 600 : 400,
+                    }}
+                  >
+                    {wdLabels[d]}
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}
 
-        {/* 每月：日期选择 */}
+        {/* 每月：先输入号数再加，已加的显示成可删的角标 */}
         {recurrenceType === "monthly" ? (
-          <div className="mb-3">
-            <div className="mb-1.5 text-xs text-neutral-500">{mk("recurPickDayOfMonth")}</div>
-            <div className="flex items-center gap-2">
+          <div className="mb-2.5">
+            <div className="mb-1 text-[11px]" style={labelStyle}>
+              {mk("recurPickDayOfMonth")}
+            </div>
+            <div className="mb-1.5 flex items-center gap-1.5">
               <input
                 type="number"
                 min={1}
                 max={31}
-                value={dayOfMonth}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10);
-                  if (!isNaN(v) && v >= 1 && v <= 31) setDayOfMonth(v);
+                value={pendingDay}
+                placeholder="--"
+                onChange={(e) => setPendingDay(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addDayOfMonth();
                 }}
-                className="w-16 rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-900 text-center focus:border-sky-400 focus:outline-none focus:ring-1 focus:ring-sky-400"
+                className="ln-no-spin h-7 w-14 rounded-md border px-1.5 text-center text-[12px] focus:outline-none"
+                style={fieldStyle}
               />
-              <span className="text-sm text-neutral-600">
-                {isZh ? "号" : "th"}
+              <span className="text-[11px]" style={labelStyle}>
+                {mk("recurDayUnit")}
               </span>
+              <button
+                type="button"
+                title={t(locale, "recurDayLimit", { n: MONTHLY_DAY_LIMIT })}
+                disabled={days.length >= MONTHLY_DAY_LIMIT}
+                onClick={addDayOfMonth}
+                className={`${btnBase} h-7 w-7`}
+                style={{
+                  borderColor: "var(--ln-theme-border)",
+                  background: "var(--ln-theme-surface)",
+                  color: "var(--ln-theme-text)",
+                  opacity: days.length >= MONTHLY_DAY_LIMIT ? 0.35 : 1,
+                }}
+              >
+                +
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {days.map((d) => {
+                const editing = active === d;
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setActive(d)}
+                    className={`${btnBase} relative h-7 min-w-[30px] px-1.5`}
+                    style={{
+                      borderColor: editing ? ACCENT : "var(--ln-theme-border)",
+                      background: editing ? ACCENT : "rgba(14,165,233,0.14)",
+                      color: editing ? "#fff" : ACCENT,
+                      fontWeight: 600,
+                    }}
+                  >
+                    {d}
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeDayOfMonth(d);
+                      }}
+                      className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] leading-none"
+                      style={{
+                        background: "var(--ln-theme-surface-active)",
+                        color: "var(--ln-theme-text-secondary)",
+                      }}
+                    >
+                      ×
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
         ) : null}
 
-        {/* 时间选择 */}
-        <div className="mb-1">
-          <div className="mb-1.5 text-xs text-neutral-500">{mk("recurPickTime")}</div>
-          <div className="flex items-center gap-2">
-            <select
-              value={hour}
-              onChange={(e) => setHour(parseInt(e.target.value, 10))}
-              className="rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-900 focus:border-sky-400 focus:outline-none"
-            >
-              {hourOptions.map((h) => (
-                <option key={h} value={h}>
-                  {String(h).padStart(2, "0")}
-                </option>
-              ))}
-            </select>
-            <span className="text-sm text-neutral-500">:</span>
-            <select
-              value={minute}
-              onChange={(e) => setMinute(parseInt(e.target.value, 10))}
-              className="rounded-lg border border-neutral-300 px-2 py-1.5 text-sm text-neutral-900 focus:border-sky-400 focus:outline-none"
-            >
-              {minOptions.map((m) => (
-                <option key={m} value={m}>
-                  {String(m).padStart(2, "0")}
-                </option>
-              ))}
-            </select>
+        {/* 时间行：最后一行是 +，其余行是 − */}
+        {!isDaily && active < 0 ? (
+          <div className="mb-2.5 text-[11px]" style={labelStyle}>
+            {mk("recurEmptyDay")}
           </div>
-        </div>
+        ) : (
+          <div className="mb-1">
+            <div className="mb-1 flex items-center justify-between">
+              <div className="text-[11px]" style={labelStyle}>
+                {mk("recurPickTime")}
+                {!isDaily ? (
+                  <span style={{ color: ACCENT }}>
+                    {recurrenceType === "weekly"
+                      ? ` · ${wdLabels[active]}`
+                      : ` · ${active}${mk("recurDayUnit")}`}
+                  </span>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={clearTimes}
+                disabled={!activeList.length}
+                className="rounded px-1 py-0.5 text-[11px] transition disabled:opacity-35"
+                style={{ color: "var(--ln-theme-text-secondary)" }}
+              >
+                {mk("recurClearTimes")}
+              </button>
+            </div>
+            {activeList.length ? (
+              <div className="flex flex-col gap-1.5">
+                {activeList.map((value, i) => {
+                  const isLast = i === activeList.length - 1;
+                  return (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <input
+                        type="time"
+                        value={value}
+                        onChange={(e) => {
+                          const next = [...activeList];
+                          next[i] = e.target.value || value;
+                          setActiveList(next);
+                        }}
+                        className="h-7 w-[86px] rounded-md border px-1.5 text-[12px] focus:outline-none"
+                        style={fieldStyle}
+                      />
+                      {/* 每一行都能删；只有最后一行带 + */}
+                      <button
+                        type="button"
+                        title={mk("recurClearTimes")}
+                        onClick={() => removeTimeRow(i)}
+                        className={`${btnBase} h-6 w-6`}
+                        style={{
+                          borderColor: "var(--ln-theme-border)",
+                          background: "transparent",
+                          color: "var(--ln-theme-text)",
+                        }}
+                      >
+                        −
+                      </button>
+                      {isLast ? (
+                        <button
+                          type="button"
+                          title={t(locale, "recurTimeLimit", { n: timeLimit })}
+                          disabled={activeList.length >= timeLimit}
+                          onClick={addTimeRow}
+                          className={`${btnBase} h-6 w-6`}
+                          style={{
+                            borderColor: "var(--ln-theme-border)",
+                            background: "transparent",
+                            color: "var(--ln-theme-text)",
+                            opacity: activeList.length >= timeLimit ? 0.35 : 1,
+                          }}
+                        >
+                          +
+                        </button>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 py-0.5">
+                <span className="text-[11px]" style={labelStyle}>
+                  {mk("recurNoTime")}
+                </span>
+                {/* 清空后总得有个入口再加回来 */}
+                <button
+                  type="button"
+                  title={t(locale, "recurTimeLimit", { n: timeLimit })}
+                  onClick={addTimeRow}
+                  className={`${btnBase} h-6 w-6`}
+                  style={{
+                    borderColor: "var(--ln-theme-border)",
+                    background: "transparent",
+                    color: "var(--ln-theme-text)",
+                  }}
+                >
+                  +
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-3 flex justify-end gap-2">
           <button
             type="button"
-            className="rounded-lg bg-neutral-200 px-3 py-1.5 text-sm text-neutral-700 hover:bg-neutral-300"
             onClick={onCancel}
+            className="ln-recur-ok h-7 rounded-lg px-3 transition"
+            style={{
+              background: "var(--ln-theme-surface)",
+              color: "var(--ln-theme-text-secondary)",
+            }}
           >
             {mk("cancel")}
           </button>
           <button
             type="button"
-            className="rounded-lg bg-sky-500 px-3 py-1.5 text-sm text-white hover:bg-sky-600"
+            disabled={!canConfirm}
             onClick={handleConfirm}
+            className="ln-recur-ok h-7 rounded-lg px-3 text-white transition disabled:opacity-40"
+            style={{ background: canConfirm ? ACCENT : "var(--ln-theme-surface-active)" }}
           >
             {mk("confirm")}
           </button>
         </div>
       </div>
+
+      <style>{`
+        /* index.css 里未分层的 input,textarea,button{font:inherit} 会盖掉 Tailwind
+           分层里的 text-[Npx]，所以面板内控件字号在这里显式压回来 */
+        .ln-recur-panel, .ln-recur-panel input, .ln-recur-panel button { font-size: 12px; }
+        .ln-recur-panel .ln-recur-ok { font-size: 13px; }
+        .ln-no-spin::-webkit-outer-spin-button,
+        .ln-no-spin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .ln-no-spin { -moz-appearance: textfield; appearance: textfield; }
+        .ln-recur-panel input[type="time"]::-webkit-calendar-picker-indicator { opacity: 0.45; }
+      `}</style>
     </div>
   );
 }

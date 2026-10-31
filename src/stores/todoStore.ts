@@ -8,7 +8,6 @@ import {
   removeTodo,
   clearCompletedTodos as dbClearCompleted,
 } from "@/lib/db";
-import { computeNextDueDate } from "@/lib/recurrence";
 
 // ──────────────── 类型定义 ────────────────
 
@@ -186,59 +185,11 @@ export const useTodoStore = create<TodoStoreState & TodoStoreActions>()(
       const target = get().todos.find((x) => x.id === id);
       if (!target) return;
 
-      // 循环待办：本体推进到下一轮，并在「已完成」下新增一条本轮完成记录
-      if (target.isRecurring && !target.completed) {
-        const now = Date.now();
-        const nextDue = computeNextDueDate(
-          target.dueDate,
-          target.recurrenceType,
-          target.recurrenceConfig,
-        );
-
-        const recordId = crypto.randomUUID();
-        const record: TodoItem = {
-          ...target,
-          id: recordId,
-          completed: true,
-          completedTime: now,
-          dueDate: target.dueDate, // 记录本轮截止时间
-          isRecurring: false, // 完成记录不再循环
-          recurrenceType: "none",
-          recurrenceConfig: "",
-          pinned: false,
-          reminded: true,
-          sortOrder: nextOrder(get().todos),
-          createTime: target.createTime,
-          updateTime: now,
-        };
-
-        const advanced: TodoItem = {
-          ...target,
-          // 本体保持未完成、继续循环，仅滚动到下一轮
-          dueDate: nextDue,
-          reminded: false,
-          updateTime: now,
-        };
-
-        set((s) => ({ todos: [...s.todos, record] }));
-        set((s) => ({
-          todos: s.todos.map((x) => (x.id === id ? advanced : x)),
-        }));
-
-        dbWrite(
-          insertTodo(record),
-          "completeRecurring(record)",
-          (msg) => set({ lastError: msg }),
-        );
-        dbWrite(
-          updateTodo(advanced),
-          "completeRecurring(advance)",
-          (msg) => set({ lastError: msg }),
-        );
-        return;
-      }
-
-      // 非循环待办 / 取消已完成：沿用原有逻辑
+      /*
+        完成即终结：按用户要求，一条待办一旦完成，截止时间与循环规则全部归零，
+        它变成一条普通已完成项，不再推进到下一轮、也不再提醒。
+        （循环本体在「到期未处理」时仍由 Rust 端自动滚动到下一轮，那是另一回事。）
+      */
       const now = Date.now();
       let updated!: TodoItem;
       set((s) => ({
@@ -251,6 +202,11 @@ export const useTodoStore = create<TodoStoreState & TodoStoreActions>()(
             // 完成时记录完成时间；取消完成时清零
             completedTime: nextCompleted ? now : 0,
             pinned: nextCompleted ? false : x.pinned,
+            dueDate: nextCompleted ? 0 : x.dueDate,
+            isRecurring: nextCompleted ? false : x.isRecurring,
+            recurrenceType: nextCompleted ? ("none" as const) : x.recurrenceType,
+            recurrenceConfig: nextCompleted ? "" : x.recurrenceConfig,
+            reminded: nextCompleted ? false : x.reminded,
             updateTime: now,
           }),
           updated);

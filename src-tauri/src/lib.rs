@@ -1,17 +1,18 @@
 use std::path::Path;
 use std::time::Duration;
 
-use chrono::{Datelike, TimeDelta, Timelike, Months, NaiveDate, DateTime};
+use chrono::{Datelike, Local, Months, NaiveDate, NaiveDateTime, TimeDelta, TimeZone, Timelike};
 use rusqlite::Connection;
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalPosition, Manager, Runtime, WebviewUrl,
-    WebviewWindowBuilder,
+    AppHandle, Emitter, LogicalPosition, Manager, PhysicalPosition, PhysicalSize, Runtime,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 #[cfg(target_os = "macos")]
-use tauri::{ActivationPolicy, RunEvent, TitleBarStyle};
+use tauri::{ActivationPolicy, TitleBarStyle};
+use tauri::RunEvent;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -35,90 +36,208 @@ pub(crate) const SETTINGS_UPDATED_EVENT: &str = "litenote-settings-updated";
 /// 提醒窗口弹窗操作后就是发这个事件让主窗口重新读库的。
 pub(crate) const TODOS_UPDATED_EVENT: &str = "litenote-todos-updated";
 
-/// 循环待办：根据当前截止时间和规则计算下一次截止时间戳
-fn compute_next_due(current_due_ms: i64, recurrence_type: &str, config: &str) -> Option<i64> {
-    use std::collections::HashMap;
+/// 毫秒时间戳 → 本地时区的日历时间。
+///
+/// 早先按 UTC 拆分星期/号数，UTC+8 下早上 8 点前的提醒会算错「下一个是哪一天」。
+fn to_local(ms: i64) -> Option<NaiveDateTime> {
+    Local.timestamp_millis_opt(ms).single().map(|d| d.naive_local())
+}
 
-    if current_due_ms <= 0 || recurrence_type == "none" {
+fn from_local(dt: NaiveDateTime) -> Option<i64> {
+    Local
+        .from_local_datetime(&dt)
+        .single()
+        .map(|d| d.timestamp_millis())
+}
+
+/// "HH:MM" 列表 → 升序去重的 (时, 分)
+fn parse_times(list: &[serde_json::Value]) -> Vec<(u32, u32)> {
+    let mut out: Vec<(u32, u32)> = list
+        .iter()
+        .filter_map(|v| {
+            let mut it = v.as_str()?.split(':');
+            let h = it.next()?.parse::<u32>().ok()?;
+            let m = it.next()?.parse::<u32>().ok()?;
+            if h > 23 || m > 59 {
+                return None;
+            }
+            Some((h, m))
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn int_list(cfg: &serde_json::Value, key: &str) -> Vec<i64> {
+    cfg.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_i64()).collect())
+        .unwrap_or_default()
+}
+
+/// 归一化后的循环规则：daily 只有一个 (0, 时刻表)；weekly 的 key 是星期 0-6；
+/// monthly 的 key 是号数 1-31。与前端 normalizeRecurrence 逐条对应。
+struct Recurrence {
+    interval: i64,
+    specs: Vec<(i64, Vec<(u32, u32)>)>,
+}
+
+/// 读 recurrence_config。老数据里没有时刻时，用锚点（原本的截止时间）的时分补齐。
+fn normalize_recurrence(rec_type: &str, config: &str, anchor: NaiveDateTime) -> Option<Recurrence> {
+    if rec_type == "none" {
         return None;
     }
+    let cfg: serde_json::Value = serde_json::from_str(config).ok()?;
+    let interval = cfg
+        .get("interval")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(1)
+        .max(1);
+    let fallback = vec![(anchor.hour(), anchor.minute())];
+    let shared = cfg
+        .get("times")
+        .and_then(|v| v.as_array())
+        .map(|a| parse_times(a.as_slice()))
+        .filter(|v: &Vec<(u32, u32)>| !v.is_empty());
 
-    let cfg: HashMap<String, serde_json::Value> = serde_json::from_str(config).ok()?;
-    let interval = cfg.get("interval").and_then(|v| v.as_i64()).unwrap_or(1).max(1);
-
-    // 毫秒 → NaiveDateTime
-    let dt = match DateTime::from_timestamp(current_due_ms / 1000, 0) {
-        Some(dt) => dt.naive_utc(),
-        None => return None,
+    let times_of = |key: i64| -> Vec<(u32, u32)> {
+        cfg.get("dayTimes")
+            .and_then(|d| d.get(key.to_string()))
+            .and_then(|v| v.as_array())
+            .map(|a| parse_times(a.as_slice()))
+            .filter(|v: &Vec<(u32, u32)>| !v.is_empty())
+            .or_else(|| shared.clone())
+            .unwrap_or_else(|| fallback.clone())
     };
 
-    let next_dt = match recurrence_type {
-        "daily" => {
-            dt + TimeDelta::days(interval)
-        }
+    let specs = match rec_type {
+        "daily" => vec![(0i64, shared.clone().unwrap_or_else(|| fallback.clone()))],
         "weekly" => {
-            let days: Vec<i64> = cfg.get("days")
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|x| x.as_i64()).collect())
-                .unwrap_or_default();
-
+            let mut days = int_list(&cfg, "days");
             if days.is_empty() {
-                dt + TimeDelta::weeks(interval as i64)
-            } else {
-                let current_wday = dt.weekday().num_days_from_sunday() as i64;
-                let mut sorted = days.clone();
-                sorted.sort();
-
-                let next_day = sorted.iter().find(|&&d| d > current_wday);
-                let offset_days = match next_day {
-                    Some(&nd) => nd - current_wday,
-                    None => {
-                        let weeks_offset = (interval - 1) * 7;
-                        (7 - current_wday) + sorted[0] + weeks_offset
-                    }
-                };
-                dt + TimeDelta::days(offset_days)
+                days.push(anchor.weekday().num_days_from_sunday() as i64);
             }
+            days.sort();
+            days.dedup();
+            days.into_iter().map(|d| (d, times_of(d))).collect()
         }
         "monthly" => {
-            let day_of_month = cfg.get("dayOfMonth")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(dt.day() as i64) as u32;
-
-            // 每次过期都推进 interval 个月（不判断 day 大小，因为函数只在过期时调用）
-            let mut y = dt.date().year();
-            let mut m = dt.date().month() as i32 + interval as i32;
-            while m > 12 {
-                m -= 12;
-                y += 1;
+            let mut doms = int_list(&cfg, "daysOfMonth");
+            if doms.is_empty() {
+                if let Some(d) = cfg.get("dayOfMonth").and_then(|v| v.as_i64()) {
+                    doms.push(d);
+                }
             }
-
-            // 目标月最大天数
-            let max_day = NaiveDate::from_ymd_opt(y, m as u32, 1)
-                .and_then(|d| d.checked_add_months(Months::new(1)))
-                .and_then(|d| d.pred_opt())
-                .map(|d| d.day())
-                .unwrap_or(31);
-
-            let target_day = day_of_month.min(max_day);
-            let target_date = NaiveDate::from_ymd_opt(y, m as u32, target_day)?;
-
-            target_date
-                .and_hms_opt(dt.hour(), dt.minute(), dt.second())?
+            if doms.is_empty() {
+                doms.push(anchor.day() as i64);
+            }
+            doms.retain(|d| (1..=31).contains(d));
+            doms.sort();
+            doms.dedup();
+            doms.into_iter().map(|d| (d, times_of(d))).collect()
         }
         _ => return None,
     };
-
-    Some(next_dt.and_utc().timestamp_millis())
+    if specs.is_empty() {
+        return None;
+    }
+    Some(Recurrence { interval, specs })
 }
 
+/// 周一为起点的周序号（与前端 weekIndex 一致）
+fn week_index(day_num: i64) -> i64 {
+    (day_num + 6).div_euclid(7)
+}
 
-/// 检查并自动推进循环待办（过期时间滚动到下一轮）
+fn last_day_of_month(year: i32, month: u32) -> u32 {
+    NaiveDate::from_ymd_opt(year, month, 1)
+        .and_then(|d| d.checked_add_months(Months::new(1)))
+        .and_then(|d| d.pred_opt())
+        .map(|d| d.day())
+        .unwrap_or(31)
+}
+
+/// 下一个提醒时刻：严格晚于 `after_ms` 的第一个槽位。
+///
+/// 按规则向未来展开，而不是「在上一次的基础上加一格」——所以「稍后提醒」挪动过
+/// 的时刻不会把循环锚点带偏。`anchor_ms` 是「每 N 天/周/月」的对齐基准。
+fn compute_next_due(after_ms: i64, anchor_ms: i64, rec_type: &str, config: &str) -> Option<i64> {
+    if rec_type == "none" || after_ms <= 0 {
+        return None;
+    }
+    let anchor_ms = if anchor_ms > 0 { anchor_ms } else { after_ms };
+    let anchor = to_local(anchor_ms)?;
+    let rec = normalize_recurrence(rec_type, config, anchor)?;
+    let now = to_local(after_ms)?;
+
+    let anchor_day = anchor.date().num_days_from_ce() as i64;
+    let anchor_week = week_index(anchor_day);
+    let anchor_month = anchor.year() as i64 * 12 + anchor.month() as i64;
+
+    // 每 N 月/周/天的对齐可能要往后扫很久，扫不到就当没有下一次
+    let horizon = 400 + 366 * rec.interval;
+    let mut day = now.date();
+
+    for _ in 0..=horizon {
+        let day_num = day.num_days_from_ce() as i64;
+        let times: Option<&[(u32, u32)]> = match rec_type {
+            "daily" => {
+                if (day_num - anchor_day).rem_euclid(rec.interval) == 0 {
+                    Some(&rec.specs[0].1)
+                } else {
+                    None
+                }
+            }
+            "weekly" => {
+                if (week_index(day_num) - anchor_week).rem_euclid(rec.interval) != 0 {
+                    None
+                } else {
+                    let wd = day.weekday().num_days_from_sunday() as i64;
+                    rec.specs
+                        .iter()
+                        .find(|(k, _)| *k == wd)
+                        .map(|(_, t)| &t[..])
+                }
+            }
+            "monthly" => {
+                let month_idx = day.year() as i64 * 12 + day.month() as i64;
+                if (month_idx - anchor_month).rem_euclid(rec.interval) != 0 {
+                    None
+                } else {
+                    // 短月里 29/30/31 被压到月末同一天：specs 已按号数升序，
+                    // 第一个命中的就是号数最小的，其余忽略（对应前端 monthlyWinners）
+                    let last = last_day_of_month(day.year(), day.month()) as i64;
+                    let today = day.day() as i64;
+                    rec.specs
+                        .iter()
+                        .find(|(d, _)| (*d).min(last) == today)
+                        .map(|(_, t)| &t[..])
+                }
+            }
+            _ => None,
+        };
+
+        if let Some(times) = times {
+            for (h, m) in times {
+                if let Some(ts) = day.and_hms_opt(*h, *m, 0).and_then(from_local) {
+                    if ts > after_ms {
+                        return Some(ts);
+                    }
+                }
+            }
+        }
+        day = day + TimeDelta::days(1);
+    }
+    None
+}
+
+/// 检查并自动推进循环待办（把 due_date 滚动到下一个提醒时刻）
 fn advance_recurring_todos(conn: &Connection, now_ms: i64) {
     // 先用块作用域收集结果以释放 conn 借用
     let rows: Vec<(String, i64, String, String)> = {
         let mut stmt = match conn.prepare(
-            "SELECT id, due_date, recurrence_type, recurrence_config FROM todos WHERE is_recurring = 1 AND due_date > 0 AND due_date < ?1",
+            "SELECT id, due_date, recurrence_type, recurrence_config FROM todos WHERE deleted = 0 AND is_recurring = 1 AND due_date > 0 AND due_date < ?1",
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -146,7 +265,10 @@ fn advance_recurring_todos(conn: &Connection, now_ms: i64) {
     }; // stmt 在此释放，conn 借用结束
 
     for (id, due_date, rec_type, rec_config) in &rows {
-        if let Some(next_due) = compute_next_due(*due_date, rec_type, rec_config) {
+        if let Some(next_due) = compute_next_due(now_ms, *due_date, rec_type, rec_config) {
+            if next_due == *due_date {
+                continue;
+            }
             if let Err(e) = conn.execute(
                 "UPDATE todos SET due_date = ?2, reminded = 0, update_time = ?3 WHERE id = ?1",
                 rusqlite::params![id, next_due, now_ms],
@@ -187,15 +309,16 @@ struct ReminderRow {
 }
 
 /// 查询到当前应当弹出提醒的待办
-/// - 命中条件：due_date > 0 且 due_date - REMIND_ADVANCE_MS <= now 且 reminded = 0
+/// - 命中条件：due_date > 0 且 due_date <= now + REMIND_ADVANCE_MS 且 reminded = 0
 fn query_due_reminders(conn: &Connection, now: i64) -> Vec<ReminderRow> {
     let threshold = now + REMIND_ADVANCE_MS;
 
     let mut stmt = match conn.prepare(
         "SELECT id, text, due_date \
          FROM todos \
-         WHERE due_date > 0 \
-           AND due_date - ?1 <= ?2 \
+         WHERE deleted = 0 \
+           AND due_date > 0 \
+           AND due_date <= ?1 \
            AND reminded = 0",
     ) {
         Ok(s) => s,
@@ -206,7 +329,7 @@ fn query_due_reminders(conn: &Connection, now: i64) -> Vec<ReminderRow> {
     };
 
     let rows = match stmt.query_map(
-        rusqlite::params![REMIND_ADVANCE_MS, threshold],
+        rusqlite::params![threshold],
         |row| {
             Ok(ReminderRow {
                 id: row.get(0)?,
@@ -235,24 +358,149 @@ fn mark_reminded(conn: &Connection, id: &str) {
     }
 }
 
-/// 计算窗口显示位置：屏幕右上角（钉钉式），距离右边 16px、顶部 60px
+/// 提醒弹窗的尺寸与落点（全部物理像素）：像设置面板那样**悬浮在面板之内**——
+/// 宽度跟面板一致（绝不比面板宽），高度按内容收紧（面板被拉得很矮时跟着缩），
+/// 在面板里居中；面板本身贴边出屏时再夹回它所在那块屏。
 ///
-/// 拿不到 monitor 信息时退回到左上 (60, 60)。
-fn compute_reminder_position<R: Runtime>(app: &AppHandle<R>) -> (f64, f64) {
-    // 默认右上角，跨平台安全值
-    let win_w = 380.0_f64;
-    let margin_right = 16.0_f64;
-    let margin_top = 60.0_f64;
+/// `want_h` = 弹窗按自己内容回报的高度；不传就用 `HEIGHT` 这个初值
+/// （窗口先按初值出现，页面量完真实内容再调 `reminder_fit` 收一次，
+/// 这样 100%/125%/150% 缩放下都不会把按钮裁掉）。
+fn reminder_geometry<R: Runtime>(app: &AppHandle<R>) -> (i32, i32, u32, u32) {
+    reminder_geometry_h(app, None)
+}
 
-    if let Ok(Some(monitor)) = app.primary_monitor() {
-        let size = monitor.size();
-        let scale = monitor.scale_factor();
-        let lw = size.width as f64 / scale;
-        // 屏幕宽减去弹窗宽再减右边距；不低于 0
-        let x = (lw - win_w - margin_right).max(0.0);
-        return (x, margin_top);
+fn reminder_geometry_h<R: Runtime>(app: &AppHandle<R>, want_h: Option<u32>) -> (i32, i32, u32, u32) {
+    const HEIGHT: u32 = 200;
+    const MAX_W: u32 = 560;
+
+    let widget = panel_screen_rect(app);
+
+    let (wx, wy, ww, wh) = match widget {
+        Some(v) => v,
+        // 拿不到面板时退回屏幕右上角
+        None => {
+            let w = 300_u32;
+            if let Ok(Some(m)) = app.primary_monitor() {
+                let scale = m.scale_factor();
+                let x = (m.size().width as f64 / scale - 316.0).max(0.0) * scale;
+                return (x as i32, (60.0 * scale) as i32, w, HEIGHT);
+            }
+            return (60, 60, w, HEIGHT);
+        }
+    };
+
+    // 宽不超过面板，高不超过面板
+    let pw = (ww as i32).min(MAX_W as i32).max(1) as u32;
+    let ph = (want_h.unwrap_or(HEIGHT) as i32).min(wh as i32).max(1) as u32;
+
+    // 面板中心落在哪块屏，就用哪块屏的边界
+    let cx = wx + ww as i32 / 2;
+    let cy = wy + wh as i32 / 2;
+    let monitor = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|m| {
+            let (mx, my) = (m.position().x, m.position().y);
+            let (mw, mh) = (m.size().width as i32, m.size().height as i32);
+            cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
+        })
+        .or_else(|| app.primary_monitor().ok().flatten());
+
+    // 在面板里居中：面板就是它的活动范围
+    let mut x = wx + (ww as i32 - pw as i32) / 2;
+    let mut y = wy + (wh as i32 - ph as i32) / 2;
+
+    if let Some(m) = monitor {
+        // 面板贴边出屏时，弹窗宁可离开面板也要留在屏里
+        let mx = m.position().x;
+        let my = m.position().y;
+        let mw = m.size().width as i32;
+        let mh = m.size().height as i32;
+        let max_x = (mx + mw - pw as i32).max(mx);
+        let max_y = (my + mh - ph as i32).max(my);
+        x = x.clamp(mx, max_x);
+        y = y.clamp(my, max_y);
     }
-    (60.0, 60.0)
+    (x, y, pw, ph)
+}
+
+/// 面板的真实屏幕矩形（物理像素）。
+///
+/// 钉桌面期间面板是桌面层窗口的子窗口，而 tao 的 `outer_position` 按 DWM 帧边界算坐标，
+/// 子窗口下会偏掉一个父窗口原点（实测差 49px，弹窗就落不回面板正中）—— 直接问 Win32 要。
+#[cfg(windows)]
+fn panel_screen_rect<R: Runtime>(app: &AppHandle<R>) -> Option<(i32, i32, u32, u32)> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let hwnd = app.get_webview_window("main")?.hwnd().ok()?.0;
+    let mut r = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if unsafe { GetWindowRect(hwnd, &mut r) } != 1 {
+        return None;
+    }
+    Some((
+        r.left,
+        r.top,
+        (r.right - r.left) as u32,
+        (r.bottom - r.top) as u32,
+    ))
+}
+
+#[cfg(not(windows))]
+fn panel_screen_rect<R: Runtime>(app: &AppHandle<R>) -> Option<(i32, i32, u32, u32)> {
+    let w = app.get_webview_window("main")?;
+    let (p, s) = match (w.outer_position(), w.outer_size()) {
+        (Ok(p), Ok(s)) => (p, s),
+        _ => return None,
+    };
+    Some((p.x, p.y, s.width, s.height))
+}
+
+/// 面板被拖动 / 拉伸时，把所有还开着的提醒弹窗按新几何重摆一次。
+/// **只动弹窗，绝不动面板的层级**：面板一旦被 topmost 之类操作碰一下，
+/// 就会从桌面层被摘出去（见 desktop_pin::is_pinned 的注释），钉桌面就废了。
+fn reposition_reminders<R: Runtime>(app: &AppHandle<R>) {
+    for (label, win) in app.webview_windows() {
+        if !label.starts_with("reminder-") {
+            continue;
+        }
+        let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+            continue;
+        };
+        // 高度沿用弹窗自己已经贴合内容的那个值，宽度与落点跟面板重算
+        let (x, y, w, h) = reminder_geometry_h(app, Some(size.height));
+        if (pos.x, pos.y, size.width, size.height) == (x, y, w, h) {
+            continue;
+        }
+        let _ = win.set_size(PhysicalSize::new(w, h));
+        let _ = win.set_position(PhysicalPosition::new(x, y));
+    }
+}
+
+/// 弹窗按自己的内容回报高度（物理像素），Rust 据此重算尺寸与居中位置。
+/// 窗口先按初值出现，页面量完真实内容再收一次 —— 只写死一个常量的话，
+/// 显示缩放一变（100%/125%/150%）按钮就会被裁掉。
+#[tauri::command]
+fn reminder_fit(win: WebviewWindow, app: AppHandle, height: u32) -> Result<(), String> {
+    let want = height.clamp(120, 480);
+    let (x, y, w, h) = reminder_geometry_h(&app, Some(want));
+    let before = win.outer_position().ok();
+    win.set_size(PhysicalSize::new(w, h))
+        .map_err(|e| e.to_string())?;
+    win.set_position(PhysicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    if let Some(p) = before {
+        println!(
+            "[LiteNote] 提醒弹窗自适应: {}x{} @({},{}) ← 原 @({},{})",
+            w, h, x, y, p.x, p.y
+        );
+    }
+    Ok(())
 }
 
 /// 格式化通知正文：`待办内容 —— 还有 X 分钟到期`
@@ -1020,7 +1268,7 @@ mod desktop_pin {
 
 /// 主窗口的原生句柄（Windows 下就是 HWND）
 #[cfg(windows)]
-fn main_hwnd(app: &AppHandle) -> Option<*mut core::ffi::c_void> {
+fn main_hwnd<R: Runtime>(app: &AppHandle<R>) -> Option<*mut core::ffi::c_void> {
     app.get_webview_window("main")?
         .hwnd()
         .ok()
@@ -1033,7 +1281,7 @@ fn main_hwnd(app: &AppHandle) -> Option<*mut core::ffi::c_void> {
 /// 开机时 show() 触发过一次，手动打的位就被它抹掉了（实测 ex 回到 0x40110）。
 /// 挂上之后再调它会写失败（输入队列已并到桌面线程），但 tao 是先更新缓存再写窗口，
 /// 所以缓存照样对上 —— 之后无论谁重算都会带上这两一位。
-fn mark_passthrough_in_tao(app: &AppHandle, on: bool) {
+fn mark_passthrough_in_tao<R: Runtime>(app: &AppHandle<R>, on: bool) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.set_ignore_cursor_events(on);
     }
@@ -1045,7 +1293,7 @@ static PIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 按「设置开启 且 当前没停靠」施加钉桌面，返回实际挂上没有。
 /// 设置改动、停靠变化、拖动结束、开机恢复都收敛到这一个函数里。
-fn sync_desktop_pin(app: &AppHandle) -> bool {
+fn sync_desktop_pin<R: Runtime>(app: &AppHandle<R>) -> bool {
     let _guard = PIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let want = read_desktop_pinned(app) && !is_docked();
     #[cfg(windows)]
@@ -1074,7 +1322,7 @@ fn sync_desktop_pin(app: &AppHandle) -> bool {
     desktop_pin::is_pinned()
 }
 
-fn apply_desktop_pin(app: &AppHandle, enabled: bool) -> Result<bool, String> {
+fn apply_desktop_pin<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<bool, String> {
     write_setting_bool(app, "desktopPin", enabled)?;
     let applied = sync_desktop_pin(app);
     rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
@@ -1086,7 +1334,7 @@ fn apply_desktop_pin(app: &AppHandle, enabled: bool) -> Result<bool, String> {
     Ok(applied)
 }
 
-fn toggle_desktop_pin(app: &AppHandle) -> Result<bool, String> {
+fn toggle_desktop_pin<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
     apply_desktop_pin(app, !read_desktop_pinned(app))
 }
 
@@ -1159,30 +1407,43 @@ fn set_widget_position(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
     }
 }
 
+/// 提醒弹窗的查询串：待办内容、id 和这一次要提醒的时刻都烧在 URL 上
+fn reminder_query(row: &ReminderRow) -> String {
+    format!(
+        "window=reminder&todoId={}&text={}&dueDate={}",
+        urlencoding_simple(&row.id),
+        urlencoding_simple(&row.text),
+        row.due_date,
+    )
+}
+
 /// 创建并展示一条独立提醒弹窗（置顶 / 不可被主窗口遮挡）
 fn show_reminder_window<R: Runtime>(app: &AppHandle<R>, row: &ReminderRow) {
     let label = format!("reminder-{}", row.id);
 
     if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.unminimize();
+        // 面板可能被拉伸或挪过，复用窗口时按当前几何重算一次
+        let (x, y, w, h) = reminder_geometry(app);
+        let _ = existing.set_size(PhysicalSize::new(w, h));
+        let _ = existing.set_position(PhysicalPosition::new(x, y));
         let _ = existing.show();
+        // 提醒时刻烧在 URL 里，复用窗口时必须重新导航，否则显示的是上一轮的时间
+        if let Ok(mut uri) = existing.url() {
+            uri.set_query(Some(&reminder_query(row)));
+            let _ = existing.navigate(uri);
+        }
         return;
     }
 
-    let text_param = urlencoding_simple(&row.text);
-    let url = format!(
-        "index.html?window=reminder&todoId={}&text={}&dueDate={}",
-        urlencoding_simple(&row.id),
-        text_param,
-        row.due_date,
-    );
+    let url = format!("index.html?{}", reminder_query(row));
 
-    let (x, y) = compute_reminder_position(app);
+    let (x, y, w, h) = reminder_geometry(app);
 
     // 先以不可见方式创建，避免 build() 时窗口管理器将其放到屏幕中央
     let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
         .title("提醒")
-        .inner_size(380.0, 160.0)
+        .inner_size(300.0, 150.0)
         .resizable(false)
         .decorations(false)
         .transparent(true)            // 配合 WebView 透明背景，彻底去掉 1px 边
@@ -1202,8 +1463,9 @@ fn show_reminder_window<R: Runtime>(app: &AppHandle<R>, row: &ReminderRow) {
 
     match result {
         Ok(win) => {
-            // 设好位置再显示，确保窗口出现在正确位置（屏幕右上角）
-            let _ = win.set_position(LogicalPosition::new(x, y));
+            // 尺寸/位置都按面板实际几何定，再显示，避免闪一下
+            let _ = win.set_size(PhysicalSize::new(w, h));
+            let _ = win.set_position(PhysicalPosition::new(x, y));
 
             // 针对不同系统进行「不抢焦点」的显示
             #[cfg(target_os = "windows")]
@@ -1460,23 +1722,31 @@ pub(crate) fn read_setting_string_app<R: Runtime>(
 
 /// 从 settings 表读取快捷键配置并注册全局快捷键（空字符串 = 不注册）
 fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let (toggle_window, toggle_focus, toggle_lock) = match litenote_db_path(app) {
+    const D_TOGGLE_WINDOW: &str = "CmdOrCtrl+Shift+L";
+    const D_FOCUS: &str = "CmdOrCtrl+Shift+F";
+    const D_LOCK: &str = "CmdOrCtrl+Shift+P";
+    const D_DESKTOP_PIN: &str = "CmdOrCtrl+Shift+D";
+
+    let (toggle_window, toggle_focus, toggle_lock, toggle_pin) = match litenote_db_path(app) {
         Some(db_path) if db_path.exists() => match Connection::open(&db_path) {
             Ok(conn) => (
-                read_setting_string(&conn, "shortcutToggleWindow", "CmdOrCtrl+Shift+L"),
-                read_setting_string(&conn, "shortcutFocusMode", "CmdOrCtrl+Shift+F"),
-                read_setting_string(&conn, "shortcutWindowLock", "CmdOrCtrl+Shift+P"),
+                read_setting_string(&conn, "shortcutToggleWindow", D_TOGGLE_WINDOW),
+                read_setting_string(&conn, "shortcutFocusMode", D_FOCUS),
+                read_setting_string(&conn, "shortcutWindowLock", D_LOCK),
+                read_setting_string(&conn, "shortcutDesktopPin", D_DESKTOP_PIN),
             ),
             Err(_) => (
-                "CmdOrCtrl+Shift+L".to_string(),
-                "CmdOrCtrl+Shift+F".to_string(),
-                "CmdOrCtrl+Shift+P".to_string(),
+                D_TOGGLE_WINDOW.to_string(),
+                D_FOCUS.to_string(),
+                D_LOCK.to_string(),
+                D_DESKTOP_PIN.to_string(),
             ),
         },
         _ => (
-            "CmdOrCtrl+Shift+L".to_string(),
-            "CmdOrCtrl+Shift+F".to_string(),
-            "CmdOrCtrl+Shift+P".to_string(),
+            D_TOGGLE_WINDOW.to_string(),
+            D_FOCUS.to_string(),
+            D_LOCK.to_string(),
+            D_DESKTOP_PIN.to_string(),
         ),
     };
 
@@ -1519,6 +1789,19 @@ fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> 
             },
         ) {
             errors.push(format!("{toggle_lock}: {e}"));
+        }
+    }
+
+    if !toggle_pin.is_empty() {
+        if let Err(e) = app.global_shortcut().on_shortcut(
+            toggle_pin.as_str(),
+            move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    let _ = toggle_desktop_pin(app);
+                }
+            },
+        ) {
+            errors.push(format!("{toggle_pin}: {e}"));
         }
     }
 
@@ -1758,6 +2041,7 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             reminder_action,
+            reminder_fit,
             hide_main_window,
             set_focus_mode,
             set_window_locked,
@@ -1828,7 +2112,7 @@ pub fn run() {
 
             let _tray = TrayIconBuilder::with_id("litenote-tray")
                 .icon(icon)
-                .tooltip("轻签 LiteNote")
+                .tooltip("一笺 Yijian")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
@@ -1925,7 +2209,87 @@ pub fn run() {
             if let RunEvent::Reopen { .. } = event {
                 show_main_window(app_handle);
             }
-            #[cfg(not(target_os = "macos"))]
-            let _ = (app_handle, event);
+            // 面板一动，弹窗就跟着重摆（弹窗是面板的「附属」，反过来不成立）
+            if let RunEvent::WindowEvent { label, event, .. } = event {
+                if label == "main"
+                    && matches!(
+                        event,
+                        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+                    )
+                {
+                    reposition_reminders(app_handle);
+                }
+            }
         });
+}
+
+#[cfg(test)]
+mod recurrence_tests {
+    use super::*;
+
+    /// 与前端共用同一张用例表（`src/lib/recurrence.ts` 的 node 跑法读同一个文件），
+    /// 两边算法各写一遍，靠这张表对齐。
+    const CASES: &str = include_str!("../tests/reccases.json");
+
+    /// "2026-10-31T09:00" → 本地时区时间戳
+    fn local_ms(text: &str) -> i64 {
+        let (date, time) = text.split_once('T').expect("用例时间格式");
+        let mut d = date.split('-').map(|x| x.parse::<i32>().unwrap());
+        let mut t = time.split(':').map(|x| x.parse::<u32>().unwrap());
+        Local
+            .with_ymd_and_hms(
+                d.next().unwrap(),
+                d.next().unwrap() as u32,
+                d.next().unwrap() as u32,
+                t.next().unwrap(),
+                t.next().unwrap(),
+                0,
+            )
+            .single()
+            .expect("本地时间不合法")
+            .timestamp_millis()
+    }
+
+    fn local_text(ms: i64) -> String {
+        let d = to_local(ms).expect("时间戳不合法");
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}",
+            d.year(),
+            d.month(),
+            d.day(),
+            d.hour(),
+            d.minute()
+        )
+    }
+
+    #[test]
+    fn next_due_matches_shared_case_table() {
+        let root: serde_json::Value = serde_json::from_str(CASES).expect("用例表不是合法 JSON");
+        let cases = root["cases"].as_array().expect("用例表缺 cases 数组");
+        let mut checked = 0usize;
+
+        for c in cases {
+            let name = c["name"].as_str().unwrap_or("?");
+            let kind = c["type"].as_str().unwrap();
+            let config = c["config"].to_string();
+            let expect = c["expect"].as_str().unwrap();
+
+            let got = compute_next_due(
+                local_ms(c["now"].as_str().unwrap()),
+                local_ms(c["anchor"].as_str().unwrap()),
+                kind,
+                &config,
+            );
+            let text = got.map(local_text).unwrap_or_else(|| "无".to_string());
+            assert_eq!(text, expect, "用例「{name}」两边算得不一致");
+            checked += 1;
+        }
+        assert!(checked >= 15, "用例表太少，起不到对照作用");
+    }
+
+    /// 提醒提前量只减一次：配置 15 分钟，就只提前 15 分钟
+    #[test]
+    fn remind_lead_is_applied_once() {
+        assert_eq!(REMIND_ADVANCE_MS, 15 * 60 * 1000);
+    }
 }

@@ -1,0 +1,21 @@
+{
+  "cases": [
+    { "name": "每天两时刻-当天10点前", "type": "daily", "config": { "interval": 1, "times": ["10:00", "15:00"] }, "anchor": "2026-10-31T10:00", "now": "2026-10-31T09:00", "expect": "2026-10-31T10:00" },
+    { "name": "每天两时刻-上午已过取下午", "type": "daily", "config": { "interval": 1, "times": ["10:00", "15:00"] }, "anchor": "2026-10-31T10:00", "now": "2026-10-31T10:30", "expect": "2026-10-31T15:00" },
+    { "name": "每天两时刻-全天过完滚到明天", "type": "daily", "config": { "interval": 1, "times": ["10:00", "15:00"] }, "anchor": "2026-10-31T10:00", "now": "2026-10-31T16:00", "expect": "2026-11-01T10:00" },
+    { "name": "每天单时刻-正好等于当刻要往后走", "type": "daily", "config": { "interval": 1, "times": ["10:00"] }, "anchor": "2026-10-31T10:00", "now": "2026-10-31T10:00", "expect": "2026-11-01T10:00" },
+    { "name": "每2天-跳过中间那天", "type": "daily", "config": { "interval": 2, "times": ["08:00"] }, "anchor": "2026-10-31T08:00", "now": "2026-10-31T09:00", "expect": "2026-11-02T08:00" },
+    { "name": "每周一三五各不同时间-取周五第一个", "type": "weekly", "config": { "interval": 1, "days": [1, 5], "dayTimes": { "1": ["08:00"], "5": ["14:00", "17:00"] } }, "anchor": "2026-11-02T09:00", "now": "2026-11-03T09:00", "expect": "2026-11-06T14:00" },
+    { "name": "每周一三五-周五14点过完取17点", "type": "weekly", "config": { "interval": 1, "days": [1, 5], "dayTimes": { "1": ["08:00"], "5": ["14:00", "17:00"] } }, "anchor": "2026-11-02T09:00", "now": "2026-11-06T15:00", "expect": "2026-11-06T17:00" },
+    { "name": "每周一三五-周五全天过完滚到下周一", "type": "weekly", "config": { "interval": 1, "days": [1, 5], "dayTimes": { "1": ["08:00"], "5": ["14:00", "17:00"] } }, "anchor": "2026-11-02T09:00", "now": "2026-11-06T18:00", "expect": "2026-11-09T08:00" },
+    { "name": "每周三早7点-UTC拆日会算错的那天", "type": "weekly", "config": { "interval": 1, "days": [3], "dayTimes": { "3": ["07:00"] } }, "anchor": "2026-11-02T07:00", "now": "2026-11-02T08:00", "expect": "2026-11-04T07:00" },
+    { "name": "每2周的周一-按锚点周对齐", "type": "weekly", "config": { "interval": 2, "days": [1], "dayTimes": { "1": ["09:00"] } }, "anchor": "2026-11-02T09:00", "now": "2026-11-03T09:00", "expect": "2026-11-16T09:00" },
+    { "name": "老数据每周二无时刻-用锚点时分", "type": "weekly", "config": { "interval": 1, "days": [2] }, "anchor": "2026-11-03T07:30", "now": "2026-11-03T08:00", "expect": "2026-11-10T07:30" },
+    { "name": "每月25号", "type": "monthly", "config": { "interval": 1, "daysOfMonth": [25], "dayTimes": { "25": ["10:00"] } }, "anchor": "2026-10-25T10:00", "now": "2026-10-31T12:00", "expect": "2026-11-25T10:00" },
+    { "name": "每月28/30/31-二月28号占用", "type": "monthly", "config": { "interval": 1, "daysOfMonth": [28, 30, 31], "dayTimes": { "28": ["09:00"], "30": ["10:00"], "31": ["11:00"] } }, "anchor": "2027-01-28T09:00", "now": "2027-02-01T00:00", "expect": "2027-02-28T09:00" },
+    { "name": "每月30/31-二月没有28号则30优先31忽略", "type": "monthly", "config": { "interval": 1, "daysOfMonth": [30, 31], "dayTimes": { "30": ["10:00"], "31": ["11:00"] } }, "anchor": "2027-01-30T10:00", "now": "2027-02-01T00:00", "expect": "2027-02-28T10:00" },
+    { "name": "每月31号-四月按月末", "type": "monthly", "config": { "interval": 1, "daysOfMonth": [31], "dayTimes": { "31": ["10:00"] } }, "anchor": "2026-03-31T10:00", "now": "2026-04-01T00:00", "expect": "2026-04-30T10:00" },
+    { "name": "每2月的15号-跳过11月", "type": "monthly", "config": { "interval": 2, "daysOfMonth": [15], "dayTimes": { "15": ["10:00"] } }, "anchor": "2026-10-15T10:00", "now": "2026-10-16T00:00", "expect": "2026-12-15T10:00" },
+    { "name": "老数据每月31号无时刻-11月按月末", "type": "monthly", "config": { "interval": 1, "dayOfMonth": 31 }, "anchor": "2026-10-31T10:00", "now": "2026-10-31T12:00", "expect": "2026-11-30T10:00" }
+  ]
+}

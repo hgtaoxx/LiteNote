@@ -2,46 +2,20 @@
  * 截止时间工具函数。
  */
 
-/** 获取某天 23:59:59.999 的时间戳 */
-function endOfDay(d: Date): number {
-  const end = new Date(d);
-  end.setHours(23, 59, 59, 999);
-  return end.getTime();
-}
-
-/** 今天 23:59:59 */
-export function todayEnd(): number {
-  return endOfDay(new Date());
-}
-
-/** 明天 23:59:59 */
-export function tomorrowEnd(): number {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return endOfDay(d);
-}
-
-/** 本周末（本周日）23:59:59 */
-export function weekendEnd(): number {
-  const d = new Date();
-  const day = d.getDay(); // 0=周日
-  const daysToSunday = day === 0 ? 0 : 7 - day;
-  d.setDate(d.getDate() + daysToSunday);
-  return endOfDay(d);
-}
-
 /**
- * 格式化截止时间为简短可读文本。
- * - 今天/明天 + 具体时间
+ * 格式化截止时间为简短可读文本，**时间一律到分钟**（按用户要求不再提供开关）：
+ * - 今天/明天 + HH:mm
  * - 已逾期：逾期 N天/N小时
- * - 其他：MM/DD HH:mm 或 MM/DD
+ * - 其他：MM/DD HH:mm
  */
 export function formatDueDate(ts: number, locale: "zh-CN" | "en"): string | null {
   if (!ts || ts <= 0) return null;
 
   const now = Date.now();
   const due = new Date(ts);
-  const isEndOfDay = due.getHours() === 23 && due.getMinutes() === 59;
+  // hourCycle 用 h23：hour12:false 在 zh-CN 下零点会印成「24:00」
+  const hhmm = (l: string) =>
+    due.toLocaleTimeString(l, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
   // 今天
   const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
@@ -56,19 +30,13 @@ export function formatDueDate(ts: number, locale: "zh-CN" | "en"): string | null
       const diffDays = Math.floor(diffMs / 86400000);
       return locale === "zh-CN" ? `逾期 ${diffDays}天` : `Overdue ${diffDays}d`;
     }
-    if (isEndOfDay) return locale === "zh-CN" ? "今天" : "Today";
-    return locale === "zh-CN"
-      ? `今天 ${due.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
-      : `Today ${due.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+    return locale === "zh-CN" ? `今天 ${hhmm("zh-CN")}` : `Today ${hhmm("en-US")}`;
   }
 
   // 明天
   const dayAfterTomorrow = new Date(tomorrowStart); dayAfterTomorrow.setDate(dayAfterTomorrow.getDate() + 1);
   if (ts >= tomorrowStart.getTime() && ts < dayAfterTomorrow.getTime()) {
-    if (isEndOfDay) return locale === "zh-CN" ? "明天" : "Tomorrow";
-    return locale === "zh-CN"
-      ? `明天 ${due.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
-      : `Tomorrow ${due.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+    return locale === "zh-CN" ? `明天 ${hhmm("zh-CN")}` : `Tomorrow ${hhmm("en-US")}`;
   }
 
   // 已逾期
@@ -78,9 +46,7 @@ export function formatDueDate(ts: number, locale: "zh-CN" | "en"): string | null
   }
 
   // 其他将来时间
-  const mmdd = `${due.getMonth() + 1}/${due.getDate()}`;
-  if (isEndOfDay) return mmdd;
-  return locale === "zh-CN"
-    ? `${mmdd} ${due.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
-    : `${mmdd} ${due.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+  const p = (n: number) => String(n).padStart(2, "0");
+  const mmdd = `${p(due.getMonth() + 1)}/${p(due.getDate())}`;
+  return `${mmdd} ${hhmm(locale === "zh-CN" ? "zh-CN" : "en-US")}`;
 }

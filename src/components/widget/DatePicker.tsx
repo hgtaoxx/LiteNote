@@ -57,7 +57,7 @@ export function DatePicker({
   const weekdays = locale === "zh-CN" ? WEEKDAYS_ZH : WEEKDAYS_EN;
 
   const monthLabel = useMemo(() => {
-    if (locale === "zh-CN") return `${viewYear}年${viewMonth + 1}月`;
+    if (locale === "zh-CN") return `${viewYear}年${pad(viewMonth + 1)}月`;
     return new Date(viewYear, viewMonth).toLocaleDateString("en-US", {
       year: "numeric",
       month: "long",

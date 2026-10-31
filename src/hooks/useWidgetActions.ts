@@ -7,6 +7,9 @@ import { useTodoStore } from "@/stores/todoStore";
 interface RecurrencePickerState {
   todoId: string;
   type: RecurrenceType;
+  /** 打开面板时回填的现有规则 */
+  config: string;
+  dueDate: number;
 }
 
 /**
@@ -159,7 +162,6 @@ export function useWidgetActions(locale: Locale) {
       },
       onToggleDone: () => menuTodo && toggleCompleted(menuTodo.id),
       onPickColor: (c: TodoColorId) => menuTodo && setTodoColor(menuTodo.id, c),
-      onPickDueDate: (ts: number) => menuTodo && setTodoDueDate(menuTodo.id, ts),
       onOpenCustomDueDate: () => {
         if (menuTodo) setDueDatePickerFor(menuTodo.id);
       },
@@ -168,7 +170,12 @@ export function useWidgetActions(locale: Locale) {
         if (!menuTodo) return;
         // 关闭右键菜单，打开循环规则弹窗
         setMenu(null);
-        setRecurrencePicker({ todoId: menuTodo.id, type });
+        setRecurrencePicker({
+          todoId: menuTodo.id,
+          type,
+          config: menuTodo.recurrenceConfig || "",
+          dueDate: menuTodo.dueDate || 0,
+        });
       },
       onClearRecurrence: () => {
         if (!menuTodo) return;
