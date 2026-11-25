@@ -4,13 +4,15 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import { COLOR_DOT_STYLE } from "@/lib/itemColors";
+import { swatchInk } from "@/lib/categoryColors";
+import { TODO_COLOR_CSS_VAR } from "@/lib/todoImportanceColors";
 import { formatDueDate } from "@/lib/dueDate";
 import {
   formatRecurrence,
   formatRecurrenceCollapsed,
   computeNextDueDate,
 } from "@/lib/recurrence";
-import type { TodoItem } from "@/types/todo";
+import type { TodoColorId, TodoItem } from "@/types/todo";
 import { useNow } from "@/hooks/useNow";
 
 /**
@@ -28,6 +30,17 @@ const TODO_TEXT_STYLE: React.CSSProperties = {
   lineHeight: 1.6,
   fontFamily: "var(--ln-content-font-family, inherit)",
 };
+
+function todoImportanceWash(colorId: TodoColorId): React.CSSProperties {
+  if (colorId === "hollow") return {};
+  const color = TODO_COLOR_CSS_VAR[colorId];
+  return {
+    backgroundImage: `linear-gradient(to right, color-mix(in srgb, ${color} 30%, transparent), transparent)`,
+    backgroundSize: "6em 1.6em",
+    backgroundRepeat: "no-repeat",
+    backgroundPosition: "left top",
+  };
+}
 // 行距：原来 py-1.5（上下各 6px）行与行之间显得很空，收成 py-0.5（上下各 2px）
 // 专注模式（FocusTodoRow）用这一套
 const TODO_ROW_PAD_Y = "py-0.5";
@@ -58,6 +71,15 @@ const DATE_GAP_Y = 0;
 /** 日期到底边线的距离（用户指定 1px） */
 const DATE_BOTTOM_PAD = 1;
 
+/** 日期行的统一高度：带不带标签，创建时间那一行都占同样的高度 */
+const DATE_ROW_HEIGHT = 12;
+
+/**
+ * 标签底色块的高度：比日期行矮 1px，保证「有标签」不会把这一行顶高。
+ * 进行中与已完成都读它，两边的时间栏行盒才是同一个数。
+ */
+const DATE_CHIP_HEIGHT = DATE_ROW_HEIGHT - 1;
+
 /**
  * 正文行高带来的「隐性空隙」系数（半行距）。
  *
@@ -80,6 +102,10 @@ interface TodoRowProps {
   focusMode?: boolean;
   /** 排序模式：整行可上下拖动，并带 iOS 那种"抖动"提示 */
   sorting?: boolean;
+  /** true：正文六字渐变；false：旧式彩色圆点 */
+  importanceMarkerStyle: boolean;
+  /** 所属标签（仅在「全部」筛选下传入，用于行尾带底色的标签） */
+  category?: { name: string; bg: string };
   onSelect: () => void;
   /** 双击进入编辑（可选：专注模式只读，不传即可） */
   onStartEdit?: () => void;
@@ -97,6 +123,7 @@ export function TodoRow(props: TodoRowProps) {
       <FocusTodoRow
         todo={props.todo}
         locale={props.locale}
+        importanceMarkerStyle={props.importanceMarkerStyle}
         onToggleCompleted={props.onToggleCompleted}
       />
     );
@@ -107,13 +134,17 @@ export function TodoRow(props: TodoRowProps) {
 function FocusTodoRow({
   todo,
   locale,
+  importanceMarkerStyle,
   onToggleCompleted,
 }: {
   todo: TodoItem;
   locale: Locale;
+  importanceMarkerStyle: boolean;
   onToggleCompleted: () => void;
 }) {
-  const dotStyle = COLOR_DOT_STYLE[todo.colorId];
+  const dotStyle = importanceMarkerStyle
+    ? COLOR_DOT_STYLE.hollow
+    : COLOR_DOT_STYLE[todo.colorId];
 
   return (
     <div
@@ -168,7 +199,11 @@ function FocusTodoRow({
       <div className={`flex min-w-0 flex-1 flex-col ${TODO_ROW_PAD_Y}`}>
         <span
           className="whitespace-pre-wrap break-words"
-          style={{ color: "var(--ln-theme-text)", ...TODO_TEXT_STYLE }}
+          style={{
+            color: "var(--ln-theme-text)",
+            ...TODO_TEXT_STYLE,
+            ...(importanceMarkerStyle ? todoImportanceWash(todo.colorId) : {}),
+          }}
         >
           {todo.text || (locale === "zh-CN" ? "（空）" : "(empty)")}
         </span>
@@ -232,8 +267,12 @@ function ManagementTodoRow({
   onEndEdit,
   onToggleCompleted,
   sorting = false,
+  importanceMarkerStyle,
+  category,
 }: Omit<TodoRowProps, "focusMode">) {
-  const dotStyle = COLOR_DOT_STYLE[todo.colorId];
+  const dotStyle = importanceMarkerStyle
+    ? COLOR_DOT_STYLE.hollow
+    : COLOR_DOT_STYLE[todo.colorId];
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // 循环规则默认收起成一行，点一下才展开
   const [recurOpen, setRecurOpen] = useState(false);
@@ -431,15 +470,9 @@ function ManagementTodoRow({
           <span
             className={
               "flex h-[0.7rem] w-[0.7rem] items-center justify-center rounded-full text-[0.4rem] font-semibold leading-none" +
-              (todo.completed ? " text-white" : "")
+              (todo.completed ? " text-[var(--ln-theme-text)]" : "")
             }
-            style={{
-              ...dotStyle,
-              // 已完成：内描边 + 勾号，与未完成的纯实心点区分
-              boxShadow: todo.completed
-                ? "inset 0 0 0 1px rgb(255 255 255 / 0.2)"
-                : dotStyle.boxShadow,
-            }}
+            style={dotStyle}
           >
             {todo.completed ? "✓" : null}
           </span>
@@ -498,7 +531,11 @@ function ManagementTodoRow({
                 "whitespace-pre-wrap break-words" +
                 (todo.completed && !todo.isRecurring ? " opacity-50 line-through" : "")
               }
-              style={{ color: "var(--ln-theme-text)", ...TODO_TEXT_STYLE }}
+              style={{
+                color: "var(--ln-theme-text)",
+                ...TODO_TEXT_STYLE,
+                ...(importanceMarkerStyle ? todoImportanceWash(todo.colorId) : {}),
+              }}
             >
               {todo.text || (locale === "zh-CN" ? "（空）" : "(empty)")}
             </span>
@@ -556,6 +593,8 @@ function ManagementTodoRow({
             fontSize: DATE_FONT_SIZE,
             // 行高 1：日期自身不再产生额外半行距
             lineHeight: 1,
+            // 固定行高：有标签 / 没标签的词条，创建时间这一行占的高度一致
+            height: DATE_ROW_HEIGHT,
             /*
               ★ 关键：alignSelf: flex-start
               容器是 flex-wrap + items-center，日期行是**换行项**。
@@ -586,7 +625,37 @@ function ManagementTodoRow({
               · 进行中 —— 创建时间
               · 已完成 —— 「开始时间～完成时间」合成一段（同一天时后面只留时刻）
           */}
-          <span style={{ color: "var(--ln-theme-text-muted)" }}>
+          {/* 标签名放在日期同一行的前面，底色与标签按钮、管理面板同一取色 */}
+          {category ? (
+            <span
+              className="max-w-[55px] shrink-0 truncate"
+              style={{
+                fontSize: DATE_FONT_SIZE - 0.5,
+                background: category.bg,
+                color: swatchInk(category.bg),
+                border: category.bg.startsWith("#")
+                  ? "none"
+                  : "1px solid var(--ln-theme-border)",
+                borderRadius: 3,
+                padding: "0 3px",
+                // 定高 + 垂直居中：标签块不会把日期行顶高，两个视图的行盒完全一致
+                display: "inline-flex",
+                alignItems: "center",
+                height: DATE_CHIP_HEIGHT,
+                lineHeight: 1,
+                marginRight: 4,
+              }}
+            >
+              {category.name}
+            </span>
+          ) : null}
+          <span
+            style={{
+              color: "var(--ln-theme-text-muted)",
+              // 已完成的「开始～完成」比创建时间长，禁掉折行才不会让它掉出这个 12px 行盒
+              whiteSpace: "nowrap",
+            }}
+          >
             {todo.completed
               ? formatCompletedRange(
                   todo.createTime,

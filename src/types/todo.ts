@@ -15,6 +15,20 @@ export type TodoColorId = (typeof TODO_COLOR_IDS)[number];
 export const RECURRENCE_TYPES = ["none", "daily", "weekly", "monthly"] as const;
 export type RecurrenceType = (typeof RECURRENCE_TYPES)[number];
 
+/** 「未分类」是系统默认分类的固定 ID，不能改名或删除。 */
+export const UNCATEGORIZED_CATEGORY_ID = "uncategorized";
+
+export interface CategoryItem {
+  id: string;
+  name: string;
+  /** 标签底色："#rrggbb"＝自选色，"none"＝主动选「无色」，null＝没选过（按顺序取空闲色） */
+  color: string | null;
+  sortOrder: number;
+  createTime: number;
+  updateTime: number;
+  system: boolean;
+}
+
 /**
  * 循环规则配置（存在 todos.recurrence_config 里的一段 JSON，改字段不用迁移表）
  *
@@ -39,6 +53,7 @@ export interface RecurrenceConfig {
 export interface TodoItem {
   id: string;
   text: string;
+  categoryId: string;
   colorId: TodoColorId;
   pinned: boolean;
   completed: boolean;

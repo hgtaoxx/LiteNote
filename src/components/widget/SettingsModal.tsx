@@ -44,6 +44,11 @@ interface SettingsModalProps {
   /** 内容（待办正文）字体 */
   contentFontFamily: ContentFontId;
   onSetContentFontFamily: (v: ContentFontId) => void;
+  /** true：六字渐变；false：旧式彩色圆点 */
+  importanceMarkerStyle: boolean;
+  onSetImportanceMarkerStyle: (v: boolean) => void;
+  tagsEnabled: boolean;
+  onSetTagsEnabled: (v: boolean) => void;
   onClose: () => void;
 }
 
@@ -365,8 +370,8 @@ function AboutTab({ locale }: { locale: Locale }) {
         style={{ color: "var(--ln-theme-text-secondary)" }}
       >
         {isZh
-          ? "轻量本地待办便签工具，数据存于本机，透明面板常驻桌面。"
-          : "Lightweight local to-do note widget. Your data stays on your machine."}
+          ? "轻量本地待办工具，数据存于本机，透明面板常驻桌面。"
+          : "Lightweight local to-do widget. Your data stays on your machine."}
       </p>
 
       {/* 全局快捷键（原「快捷键」标签页的内容）——标题与上面的「关于」同字号、同左对齐，
@@ -948,6 +953,10 @@ export function SettingsModal({
   onSetContentFontSize,
   contentFontFamily,
   onSetContentFontFamily,
+  importanceMarkerStyle,
+  onSetImportanceMarkerStyle,
+  tagsEnabled,
+  onSetTagsEnabled,
   onClose,
 }: SettingsModalProps) {
   const mk = (key: MessageKey) => t(locale, key);
@@ -1105,6 +1114,16 @@ export function SettingsModal({
               checked={!weekCalendarCollapsed}
               onChange={(v) => onSetWeekCalendarCollapsed(!v)}
               label={mk("showWeekCalendarSection")}
+            />
+            <Switch
+              checked={importanceMarkerStyle}
+              onChange={onSetImportanceMarkerStyle}
+              label={mk("importanceMarkerStyle")}
+            />
+            <Switch
+              checked={tagsEnabled}
+              onChange={onSetTagsEnabled}
+              label={mk("tagsEnabled")}
             />
           </div>
           <style>{`

@@ -3,6 +3,7 @@ import type { TodoColorId, RecurrenceType } from "@/types/todo";
 import type { Locale } from "@/i18n";
 import { t } from "@/i18n";
 import { useTodoStore } from "@/stores/todoStore";
+import { useCategoryStore } from "@/stores/categoryStore";
 
 interface RecurrencePickerState {
   todoId: string;
@@ -26,6 +27,8 @@ export function useWidgetActions(locale: Locale) {
   const togglePinned = useTodoStore((s) => s.togglePinned);
   const toggleCompleted = useTodoStore((s) => s.toggleCompleted);
   const setTodoColor = useTodoStore((s) => s.setTodoColor);
+  const setTodoCategory = useTodoStore((s) => s.setTodoCategory);
+  const addCategory = useCategoryStore((s) => s.addCategory);
   const setTodoDueDate = useTodoStore((s) => s.setTodoDueDate);
   const setTodoRecurrence = useTodoStore((s) => s.setTodoRecurrence);
   const reorderTodos = useTodoStore((s) => s.reorderTodos);
@@ -55,8 +58,8 @@ export function useWidgetActions(locale: Locale) {
   );
 
   // ── 操作回调 ──
-  const handleAdd = useCallback((dueDate?: number) => {
-    const id = addTodo();
+  const handleAdd = useCallback((dueDate?: number, categoryId?: string) => {
+    const id = addTodo(categoryId);
     setSelectedId(id);
     setEditingId(id);
     if (dueDate !== undefined && dueDate > 0) {
@@ -162,6 +165,13 @@ export function useWidgetActions(locale: Locale) {
       },
       onToggleDone: () => menuTodo && toggleCompleted(menuTodo.id),
       onPickColor: (c: TodoColorId) => menuTodo && setTodoColor(menuTodo.id, c),
+      onPickCategory: (id: string) => menuTodo && setTodoCategory(menuTodo.id, id),
+      /** 菜单里直接新建标签：建好就归到这条待办上 */
+      onCreateCategory: (name: string) => {
+        if (!menuTodo) return;
+        const created = addCategory(name);
+        if (created) setTodoCategory(menuTodo.id, created.id);
+      },
       onOpenCustomDueDate: () => {
         if (menuTodo) setDueDatePickerFor(menuTodo.id);
       },
@@ -187,7 +197,7 @@ export function useWidgetActions(locale: Locale) {
         setCopyToPickerFor(menuTodo.id);
       },
     }),
-    [menuTodo, togglePinned, toggleCompleted, setTodoColor, setTodoDueDate, setTodoRecurrence],
+    [menuTodo, togglePinned, toggleCompleted, setTodoColor, setTodoCategory, addCategory, setTodoDueDate, setTodoRecurrence],
   );
 
   return {

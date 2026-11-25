@@ -25,6 +25,10 @@ interface TodoListProps {
   todoView?: "active" | "completed";
   /** 周日历选中日期（null 表示不筛选）；已完成视图按 completedTime 落在当天叠加过滤 */
   selectedDate?: number | null;
+  /** true：六字渐变标记；false：旧式彩色圆点标记 */
+  importanceMarkerStyle: boolean;
+  /** 「全部」筛选时每行的标签标记（名字 + 底色）；按标签筛选时不传 */
+  categoryChipById?: Record<string, { name: string; bg: string } | undefined> | null;
   onSelect: (id: string) => void;
   /** 双击进入编辑 */
   onStartEdit?: (id: string) => void;
@@ -47,6 +51,8 @@ export function TodoList({
   focusMode = false,
   todoView = "active",
   selectedDate = null,
+  importanceMarkerStyle,
+  categoryChipById = null,
   onSelect,
   onStartEdit,
   onStartSort,
@@ -91,6 +97,8 @@ export function TodoList({
         todo={todo}
         locale={locale}
         focusMode={focusMode}
+        importanceMarkerStyle={importanceMarkerStyle}
+        category={categoryChipById ? categoryChipById[todo.categoryId] : undefined}
         selected={todo.id === selectedId}
         editing={todo.id === editingId}
         sorting={sorting}

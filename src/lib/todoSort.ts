@@ -6,10 +6,12 @@ export function sortTodos(list: TodoItem[]): TodoItem[] {
   return [...list].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
-    // 已完成的按完成时间倒序；未完成的回退到更新时间倒序
-    const at = a.completed ? a.completedTime : a.updateTime;
-    const bt = b.completed ? b.completedTime : b.updateTime;
-    return bt - at;
+    if (a.completed && b.completed) {
+      const at = a.completedTime > 0 ? a.completedTime : a.updateTime;
+      const bt = b.completedTime > 0 ? b.completedTime : b.updateTime;
+      return bt - at;
+    }
+    return 0;
   });
 }
 

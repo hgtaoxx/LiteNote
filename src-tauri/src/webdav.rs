@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::{
-    litenote_db_path, now_ms, read_setting_bool, read_setting_bool_app, read_setting_string,
-    read_setting_string_app, SETTINGS_UPDATED_EVENT, TODOS_UPDATED_EVENT,
+    apply_synced_settings, ensure_settings_updated_at, litenote_db_path, now_ms, read_setting_bool,
+    read_setting_bool_app, read_setting_string, read_setting_string_app, CATEGORIES_UPDATED_EVENT,
+    SETTINGS_UPDATED_EVENT, TODOS_UPDATED_EVENT,
 };
 
 /// 远端文件名（存于用户配置的 remotePath 目录下，默认 /Yijian/litenote.json）
@@ -29,8 +30,14 @@ use crate::{
 /// 以前默认值是上一任使用者的个人目录名，别人首次同步会在自己网盘里建出别人的目录。
 const DEFAULT_REMOTE_PATH: &str = "/Yijian/litenote.json";
 
-/// 后台定时同步间隔（秒）
-const SYNC_POLL_INTERVAL_SECS: u64 = 300;
+/// 后台定时同步间隔（秒）。
+///
+/// 口径（他定的）：**内容变化才是主触发**（前端在列表变化后 2.5 秒调 webdavAutoSync，
+/// 实测新增/删除都在几秒内传到云端），定时器只是**兜底**——用来接住「另一台设备改了、
+/// 本机一直没动」这种情况。所以间隔可以放宽，不必跟得那么紧。
+const SYNC_POLL_INTERVAL_SECS: u64 = 3600;
+const SYNC_FILE_VERSION: u32 = 3;
+const UNCATEGORIZED_CATEGORY_ID: &str = "uncategorized";
 
 /// 简单加密密钥派生：基于固定 salt + 应用标识（设备级弱密钥，仅防明文泄漏）
 const ENC_KEY_SALT: &[u8] = b"litenote-webdav-salt";
@@ -44,8 +51,13 @@ struct TodoItemSync {
     id: String,
     text: String,
     completed: bool,
+    /// 一条待办只属于一个分类。旧快照缺字段时由 serde 归入系统默认分类。
+    #[serde(default)]
+    category_id: Option<String>,
     #[serde(default)]
     pinned: bool,
+    #[serde(default)]
+    sort_order: f64,
     #[serde(default)]
     color_id: Option<String>,
     #[serde(default)]
@@ -72,11 +84,42 @@ struct TodoItemSync {
     completed_time: i64,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct CategorySync {
+    id: String,
+    name: String,
+    /// 标签底色："#rrggbb" / "none"；None = 前端按顺序自动取空闲色
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    sort_order: f64,
+    #[serde(default)]
+    create_time: i64,
+    #[serde(default)]
+    update_time: i64,
+    #[serde(default)]
+    deleted: bool,
+    #[serde(default)]
+    system: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+struct SettingSync {
+    key: String,
+    value: String,
+    updated_at: i64,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct SyncFile {
     version: u32,
     updated_at: i64,
     todos: Vec<TodoItemSync>,
+    #[serde(default)]
+    categories: Vec<CategorySync>,
+    #[serde(default)]
+    settings: Vec<SettingSync>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -154,6 +197,190 @@ fn write_setting_string<R: Runtime>(app: &AppHandle<R>, key: &str, value: &str) 
     )
     .map_err(|e| format!("写入设置失败: {e}"))?;
     Ok(())
+}
+
+// ──────────────── 分类同步 ────────────────
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let sql = format!("PRAGMA table_info({})", table);
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("检查表结构失败: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|e| format!("读取表结构失败: {e}"))?;
+    for row in rows {
+        if row.map_err(|e| format!("读取表结构失败: {e}"))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// 同步路径不能假设前端 WebView 已经完成建表：老库、只启动 Rust 后台、云端恢复
+/// 都可能在分类表尚未存在时到达这里。补一次幂等 schema，再读写才不会报 no such table。
+fn ensure_category_sync_schema(conn: &Connection) -> Result<(), String> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS categories (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            color TEXT,
+            sort_order REAL NOT NULL DEFAULT 0,
+            create_time INTEGER NOT NULL DEFAULT 0,
+            update_time INTEGER NOT NULL DEFAULT 0,
+            deleted INTEGER NOT NULL DEFAULT 0,
+            system INTEGER NOT NULL DEFAULT 0
+        )",
+        [],
+    )
+    .map_err(|e| format!("创建分类表失败: {e}"))?;
+
+    for (column, definition) in [
+        ("color", "TEXT"),
+        ("sort_order", "REAL NOT NULL DEFAULT 0"),
+        ("deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ("system", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !column_exists(conn, "categories", column)? {
+            let sql = format!("ALTER TABLE categories ADD COLUMN {column} {definition}");
+            conn.execute(&sql, [])
+                .map_err(|e| format!("升级分类表失败: {e}"))?;
+        }
+    }
+
+    let now = now_ms();
+    conn.execute(
+        "INSERT INTO categories (id,name,sort_order,create_time,update_time,deleted,system)
+         VALUES (?1,'未分类',0,?2,?2,0,1)
+         ON CONFLICT(id) DO UPDATE SET name='未分类', system=1, deleted=0",
+        rusqlite::params![UNCATEGORIZED_CATEGORY_ID, now],
+    )
+    .map_err(|e| format!("初始化默认分类失败: {e}"))?;
+
+    let has_todos = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='todos' LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if has_todos && !column_exists(conn, "todos", "category_id")? {
+        conn.execute(
+            "ALTER TABLE todos ADD COLUMN category_id TEXT NOT NULL DEFAULT 'uncategorized'",
+            [],
+        )
+        .map_err(|e| format!("升级待办表失败: {e}"))?;
+    }
+    if has_todos {
+        conn.execute(
+            "UPDATE todos SET category_id = ?1 WHERE category_id IS NULL OR category_id = ''",
+            rusqlite::params![UNCATEGORIZED_CATEGORY_ID],
+        )
+        .map_err(|e| format!("归一化待办分类失败: {e}"))?;
+    }
+    Ok(())
+}
+
+fn normalize_category_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return "未命名".to_string();
+    }
+    trimmed.chars().take(40).filter(|c| !c.is_control()).collect()
+}
+
+fn normalize_category_color(color: Option<String>) -> Option<String> {
+    let value = color?
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn normalize_category(item: CategorySync) -> CategorySync {
+    if item.id == UNCATEGORIZED_CATEGORY_ID {
+        return CategorySync {
+            id: UNCATEGORIZED_CATEGORY_ID.to_string(),
+            name: "未分类".to_string(),
+            color: None,
+            sort_order: 0.0,
+            create_time: item.create_time,
+            update_time: item.update_time.max(0),
+            deleted: false,
+            system: true,
+        };
+    }
+    CategorySync {
+        name: normalize_category_name(&item.name),
+        color: normalize_category_color(item.color),
+        update_time: item.update_time.max(0),
+        deleted: item.deleted,
+        system: false,
+        ..item
+    }
+}
+
+fn read_local_categories<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<CategorySync>, String> {
+    let db_path = litenote_db_path(app).ok_or_else(|| "无法获取数据库路径".to_string())?;
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = open_db(&db_path)?;
+    ensure_category_sync_schema(&conn)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, color, sort_order, create_time, update_time, deleted, system \
+             FROM categories",
+        )
+        .map_err(|e| format!("查询分类失败: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(CategorySync {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                color: row.get(2)?,
+                sort_order: row.get(3)?,
+                create_time: row.get(4)?,
+                update_time: row.get(5)?,
+                deleted: row.get::<_, i64>(6)? != 0,
+                system: row.get::<_, i64>(7)? != 0,
+            })
+        })
+        .map_err(|e| format!("读取分类失败: {e}"))?;
+    Ok(rows.filter_map(|r| r.ok()).map(normalize_category).collect())
+}
+
+fn merge_categories(local: Vec<CategorySync>, remote: Vec<CategorySync>) -> Vec<CategorySync> {
+    let mut map: std::collections::HashMap<String, CategorySync> = std::collections::HashMap::new();
+    for item in local {
+        let item = normalize_category(item);
+        map.insert(item.id.clone(), item);
+    }
+    for item in remote {
+        let item = normalize_category(item);
+        match map.get(&item.id) {
+            Some(l) if l.update_time >= item.update_time => {}
+            _ => {
+                map.insert(item.id.clone(), item);
+            }
+        }
+    }
+    let mut merged: Vec<CategorySync> = map.into_values().collect();
+    merged.sort_by(|a, b| {
+        a.system
+            .cmp(&b.system)
+            .then(a.sort_order.partial_cmp(&b.sort_order).unwrap_or(std::cmp::Ordering::Equal))
+            .then(a.update_time.cmp(&b.update_time))
+            .then(a.id.cmp(&b.id))
+    });
+    merged
+}
+
+fn category_tombstone_cutoff() -> i64 {
+    now_ms() - 30 * 24 * 60 * 60 * 1000
 }
 
 // ──────────────── WebDAV 客户端 ────────────────
@@ -308,6 +535,7 @@ fn read_local_todos<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<TodoItemSync>,
         return Ok(Vec::new());
     }
     let conn = open_db(&db_path)?;
+    ensure_category_sync_schema(&conn)?;
     let has_table = conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='todos' LIMIT 1",
@@ -322,9 +550,9 @@ fn read_local_todos<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<TodoItemSync>,
     // 这里刻意不过滤 deleted：墓碑必须一起进快照，才能把「已删除」带到其它设备。
     let mut stmt = conn
         .prepare(
-            "SELECT id, text, completed, pinned, color_id, due_date, reminded, \
+            "SELECT id, text, completed, pinned, sort_order, color_id, due_date, reminded, \
              is_recurring, recurrence_type, recurrence_config, update_time, create_time, completed_time, \
-             deleted \
+             deleted, category_id \
              FROM todos",
         )
         .map_err(|e| format!("查询待办失败: {e}"))?;
@@ -336,16 +564,22 @@ fn read_local_todos<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<TodoItemSync>,
                 text: row.get(1)?,
                 completed: row.get(2)?,
                 pinned: row.get(3)?,
-                color_id: row.get(4)?,
-                due_date: row.get(5)?,
-                reminded: row.get(6)?,
-                is_recurring: row.get(7)?,
-                recurrence_type: row.get(8)?,
-                recurrence_config: row.get(9)?,
-                update_time: row.get(10)?,
-                create_time: row.get(11)?,
-                completed_time: row.get(12)?,
-                deleted: row.get::<_, i64>(13)? != 0,
+                sort_order: row.get(4)?,
+                color_id: row.get(5)?,
+                due_date: row.get(6)?,
+                reminded: row.get(7)?,
+                is_recurring: row.get(8)?,
+                recurrence_type: row.get(9)?,
+                recurrence_config: row.get(10)?,
+                update_time: row.get(11)?,
+                create_time: row.get(12)?,
+                completed_time: row.get(13)?,
+                deleted: row.get::<_, i64>(14)? != 0,
+                category_id: Some(
+                    row.get::<_, Option<String>>(15)?
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| UNCATEGORIZED_CATEGORY_ID.to_string()),
+                ),
             })
         })
         .map_err(|e| format!("读取待办失败: {e}"))?;
@@ -354,44 +588,229 @@ fn read_local_todos<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<TodoItemSync>,
     Ok(todos)
 }
 
-/// 待办内容指纹。
-///
-/// 只哈希待办数组本身：**不能**把 `updated_at` 一起算进去，否则每次调用都不同，
-/// 判断就永远失效了。
-///
-/// 比较前先按 (id, update_time) 排序：数组顺序不算「内容变了」。
-/// 不排的话，远端文件里的条目顺序只要和本地排序结果对不上，
-/// 每轮轮询都会误判成「云端落后」而白 PUT 一次（实测踩过）。
-fn fingerprint(todos: &[TodoItemSync]) -> String {
+const SYNCABLE_SETTING_KEYS: &[&str] = &[
+    "clockCollapsed",
+    "showSeconds",
+    "weekCalendarCollapsed",
+    "contentFontSize",
+    "contentFontFamily",
+    "importanceMarkerStyle",
+    "tagsEnabled",
+    "panelOpacity",
+    "localeMode",
+    "windowLocked",
+    "autoStart",
+    "edgeHide",
+    "desktopPin",
+    "theme",
+    "reminderMode",
+    "focusMode",
+    "fullWindowWidth",
+    "fullWindowHeight",
+    "shortcutToggleWindow",
+    "shortcutFocusMode",
+    "shortcutWindowLock",
+    "shortcutDesktopPin",
+];
+
+fn normalize_setting(key: &str, value: &str) -> Option<String> {
+    match key {
+        "clockCollapsed" | "showSeconds" | "weekCalendarCollapsed" | "windowLocked"
+        | "autoStart" | "edgeHide" | "desktopPin" | "focusMode"
+        | "importanceMarkerStyle" | "tagsEnabled" => {
+            serde_json::from_str::<bool>(value).ok().map(|v| v.to_string())
+        }
+        "contentFontSize" => {
+            let n = value.parse::<f64>().ok()?;
+            ((12.0..=17.0).contains(&n) && (n * 2.0).fract() == 0.0)
+                .then(|| n.to_string())
+        }
+        "panelOpacity" => {
+            let n = value.parse::<f64>().ok()?;
+            ((0.15..=1.0).contains(&n) && n.is_finite()).then(|| n.to_string())
+        }
+        "fullWindowWidth" => {
+            let n = value.parse::<f64>().ok()?;
+            ((200.0..=720.0).contains(&n) && n.fract() == 0.0).then(|| format!("{}", n as i64))
+        }
+        "fullWindowHeight" => {
+            let n = value.parse::<f64>().ok()?;
+            ((300.0..=1240.0).contains(&n) && n.fract() == 0.0).then(|| format!("{}", n as i64))
+        }
+        "contentFontFamily" => {
+            matches!(value, "system" | "hei" | "song" | "kai" | "mono").then(|| value.to_string())
+        }
+        "localeMode" => matches!(value, "system" | "zh-CN" | "en").then(|| value.to_string()),
+        "theme" => matches!(value, "glass" | "dark" | "light" | "yellow" | "gray" | "pink")
+            .then(|| value.to_string()),
+        "reminderMode" => matches!(value, "popup" | "system").then(|| value.to_string()),
+        "shortcutToggleWindow" | "shortcutFocusMode" | "shortcutWindowLock"
+        | "shortcutDesktopPin" => (value.len() <= 128 && !value.chars().any(char::is_control))
+            .then(|| value.to_string()),
+        _ => None,
+    }
+}
+
+fn read_local_settings<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<SettingSync>, String> {
+    let db_path = litenote_db_path(app).ok_or_else(|| "无法获取数据库路径".to_string())?;
+    if !db_path.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = open_db(&db_path)?;
+    ensure_settings_updated_at(&conn)?;
+    let mut stmt = conn
+        .prepare("SELECT key, value, updated_at FROM settings ORDER BY key")
+        .map_err(|e| format!("查询设置失败: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SettingSync {
+                key: row.get(0)?,
+                value: row.get(1)?,
+                updated_at: row.get(2)?,
+            })
+        })
+        .map_err(|e| format!("读取设置失败: {e}"))?;
+    let mut settings = Vec::new();
+    for row in rows {
+        let item = row.map_err(|e| format!("读取设置失败: {e}"))?;
+        if SYNCABLE_SETTING_KEYS.contains(&item.key.as_str()) {
+            if let Some(value) = normalize_setting(&item.key, &item.value) {
+                settings.push(SettingSync {
+                    key: item.key,
+                    value,
+                    updated_at: item.updated_at.max(0),
+                });
+            }
+        }
+    }
+    Ok(settings)
+}
+
+fn merge_settings(local: Vec<SettingSync>, remote: Vec<SettingSync>) -> Vec<SettingSync> {
+    let mut map: std::collections::HashMap<String, SettingSync> = std::collections::HashMap::new();
+    for item in local {
+        if SYNCABLE_SETTING_KEYS.contains(&item.key.as_str()) {
+            if let Some(value) = normalize_setting(&item.key, &item.value) {
+                map.insert(
+                    item.key.clone(),
+                    SettingSync {
+                        key: item.key,
+                        value,
+                        updated_at: item.updated_at.max(0),
+                    },
+                );
+            }
+        }
+    }
+    for item in remote {
+        if !SYNCABLE_SETTING_KEYS.contains(&item.key.as_str()) {
+            continue;
+        }
+        let Some(value) = normalize_setting(&item.key, &item.value) else {
+            continue;
+        };
+        match map.get(&item.key) {
+            Some(l) if l.updated_at >= item.updated_at.max(0) => {}
+            _ => {
+                map.insert(
+                    item.key.clone(),
+                    SettingSync {
+                        key: item.key,
+                        value,
+                        updated_at: item.updated_at.max(0),
+                    },
+                );
+            }
+        }
+    }
+    let mut merged: Vec<SettingSync> = map.into_values().collect();
+    merged.sort_by(|a, b| a.key.cmp(&b.key));
+    merged
+}
+
+/// 待办、分类与设置的合并指纹；数组顺序和顶层 updated_at 不参与。
+fn fingerprint(
+    todos: &[TodoItemSync],
+    categories: &[CategorySync],
+    settings: &[SettingSync],
+) -> String {
     use std::hash::{Hash, Hasher};
 
-    let mut sorted: Vec<TodoItemSync> = todos.to_vec();
-    sorted.sort_by(|a, b| {
+    let mut sorted_todos: Vec<TodoItemSync> = todos.to_vec();
+    sorted_todos.sort_by(|a, b| {
         a.id.cmp(&b.id).then(a.update_time.cmp(&b.update_time))
     });
-    let json = serde_json::to_string(&sorted).unwrap_or_default();
+    let mut sorted_categories: Vec<CategorySync> = categories.to_vec();
+    sorted_categories.sort_by(|a, b| {
+        a.id.cmp(&b.id).then(a.update_time.cmp(&b.update_time))
+    });
+    let mut sorted_settings: Vec<SettingSync> = settings.to_vec();
+    sorted_settings.sort_by(|a, b| a.key.cmp(&b.key));
+    let json = serde_json::to_string(&(sorted_todos, sorted_categories, sorted_settings)).unwrap_or_default();
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     json.hash(&mut hasher);
     format!("{:x}", hasher.finish())
 }
 
-/// 用远端数据覆盖本地（手动恢复）
-fn overwrite_local_todos<R: Runtime>(app: &AppHandle<R>, sync: &SyncFile) -> Result<(), String> {
+fn overwrite_local_snapshot<R: Runtime>(app: &AppHandle<R>, sync: &SyncFile) -> Result<(), String> {
     let db_path = litenote_db_path(app).ok_or_else(|| "无法获取数据库路径".to_string())?;
-    let conn = open_db(&db_path)?;
+    let mut conn = open_db(&db_path)?;
+    ensure_settings_updated_at(&conn)?;
+    ensure_category_sync_schema(&conn)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("开始恢复事务失败: {e}"))?;
 
-    // 清空并重新插入
-    conn.execute("DELETE FROM todos", [])
+    tx.execute("DELETE FROM todos", [])
         .map_err(|e| format!("清空本地数据失败: {e}"))?;
+    tx.execute("DELETE FROM categories", [])
+        .map_err(|e| format!("清空分类数据失败: {e}"))?;
+
+    for item in &sync.categories {
+        let item = normalize_category(item.clone());
+        tx.execute(
+            "INSERT INTO categories (id,name,color,sort_order,create_time,update_time,deleted,system) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, color=excluded.color, sort_order=excluded.sort_order, \
+             create_time=excluded.create_time, update_time=excluded.update_time, \
+             deleted=excluded.deleted, system=excluded.system",
+            rusqlite::params![
+                item.id,
+                item.name,
+                item.color,
+                item.sort_order,
+                item.create_time,
+                item.update_time,
+                item.deleted,
+                item.system,
+            ],
+        )
+        .map_err(|e| format!("写入分类失败: {e}"))?;
+    }
+
+    // 云端 v2 或手工快照可能没有任何分类；恢复后仍必须有「未分类」这个归属目标。
+    let now = now_ms();
+    tx.execute(
+        "INSERT INTO categories (id,name,sort_order,create_time,update_time,deleted,system) \
+         VALUES (?1,'未分类',0,?2,?2,0,1) \
+         ON CONFLICT(id) DO UPDATE SET name='未分类', system=1, deleted=0",
+        rusqlite::params![UNCATEGORIZED_CATEGORY_ID, now],
+    )
+    .map_err(|e| format!("恢复默认分类失败: {e}"))?;
 
     for item in &sync.todos {
-        conn.execute(
+        let category_id = item
+            .category_id
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| UNCATEGORIZED_CATEGORY_ID.to_string());
+        tx.execute(
             "INSERT INTO todos \
-             (id, text, completed, pinned, color_id, due_date, reminded, is_recurring, recurrence_type, recurrence_config, update_time, create_time, completed_time, deleted) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) \
+             (id, text, category_id, completed, pinned, sort_order, color_id, due_date, reminded, is_recurring, recurrence_type, recurrence_config, update_time, create_time, completed_time, deleted) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16) \
              ON CONFLICT(id) DO UPDATE SET \
-             text=excluded.text, completed=excluded.completed, pinned=excluded.pinned, \
-             color_id=excluded.color_id, due_date=excluded.due_date, reminded=excluded.reminded, \
+             text=excluded.text, category_id=excluded.category_id, completed=excluded.completed, pinned=excluded.pinned, \
+             sort_order=excluded.sort_order, color_id=excluded.color_id, due_date=excluded.due_date, reminded=excluded.reminded, \
              is_recurring=excluded.is_recurring, recurrence_type=excluded.recurrence_type, \
              recurrence_config=excluded.recurrence_config, update_time=excluded.update_time, \
              create_time=excluded.create_time, completed_time=excluded.completed_time, \
@@ -399,8 +818,10 @@ fn overwrite_local_todos<R: Runtime>(app: &AppHandle<R>, sync: &SyncFile) -> Res
             rusqlite::params![
                 item.id,
                 item.text,
+                category_id,
                 item.completed,
                 item.pinned,
+                item.sort_order,
                 item.color_id,
                 item.due_date,
                 item.reminded,
@@ -416,6 +837,36 @@ fn overwrite_local_todos<R: Runtime>(app: &AppHandle<R>, sync: &SyncFile) -> Res
         .map_err(|e| format!("写入待办失败: {e}"))?;
     }
 
+    // 分类快照可以带墓碑；这些引用绝不能悬空，否则筛选时条目会凭空消失。
+    tx.execute(
+        "UPDATE todos SET category_id = ?1 \
+         WHERE category_id IS NULL OR category_id = '' \
+            OR category_id NOT IN (SELECT id FROM categories WHERE deleted = 0)",
+        rusqlite::params![UNCATEGORIZED_CATEGORY_ID],
+    )
+    .map_err(|e| format!("修复待办分类引用失败: {e}"))?;
+    tx.execute(
+        "DELETE FROM categories WHERE deleted = 1 AND update_time < ?1",
+        rusqlite::params![category_tombstone_cutoff()],
+    )
+    .map_err(|e| format!("清理分类墓碑失败: {e}"))?;
+
+    for item in &sync.settings {
+        if !SYNCABLE_SETTING_KEYS.contains(&item.key.as_str()) {
+            continue;
+        }
+        let Some(value) = normalize_setting(&item.key, &item.value) else {
+            continue;
+        };
+        tx.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            rusqlite::params![item.key, value, item.updated_at.max(0)],
+        )
+        .map_err(|e| format!("写入设置失败: {e}"))?;
+    }
+
+    tx.commit().map_err(|e| format!("提交恢复事务失败: {e}"))?;
     Ok(())
 }
 
@@ -521,6 +972,18 @@ fn sync_to_webdav<R: Runtime>(
     let full = normalize_remote_url(&url, &remote_path);
 
     let local = read_local_todos(app)?;
+    let local_categories = read_local_categories(app)?;
+    let local_settings = read_local_settings(app)?;
+
+    // 诊断：同步是「有网络等待」的路径，起止都记一行并算耗时。
+    // 主线程不在这儿跑，但一旦远端卡住，日志要能说明卡在哪一步。
+    let _op_sync = crate::diag::op(crate::diag::OP_SYNC);
+    let t_start = crate::now_ms();
+    crate::diag::log_line(&format!(
+        "同步开始 → {}（本地 {} 条）",
+        target_for_message(&full),
+        local.len()
+    ));
 
     // 每轮都先 GET 一次远端：本地没改 ≠ 云端没改。
     // 以前这里用「本地指纹 == 上次同步指纹」当闸门，一致就一个请求都不发（为省流量定的），
@@ -528,7 +991,7 @@ fn sync_to_webdav<R: Runtime>(
     // 另一台设备的改动要等到重启或手动点「立即同步」才进得来。
     // 现在固定每轮一次 GET（快照就几 KB），真正的写盘/上传再按差异决定，见下面三方指纹比对。
     // 尝试拉取远端
-    let remote_todos = match client
+    let (remote_todos, remote_categories, remote_settings) = match client
         .get(&full)
         .header(reqwest::header::AUTHORIZATION, auth.clone())
         .send()
@@ -537,18 +1000,23 @@ fn sync_to_webdav<R: Runtime>(
             let body = resp.text().map_err(|e| format!("读取响应失败: {e}"))?;
             match serde_json::from_str::<SyncFile>(&body) {
                 Ok(sf) => {
-                    eprintln!("[webdav] sync: 拉取远端 {} 条", sf.todos.len());
-                    sf.todos
+                    eprintln!(
+                        "[webdav] sync: 拉取远端 {} 条 / {} 个分类 / {} 项设置",
+                        sf.todos.len(),
+                        sf.categories.len(),
+                        sf.settings.len()
+                    );
+                    (sf.todos, sf.categories, sf.settings)
                 }
                 Err(e) => {
                     eprintln!("[webdav] sync: 远端数据解析失败，视为空: {e}");
-                    Vec::new()
+                    (Vec::new(), Vec::new(), Vec::new())
                 }
             }
         }
         Ok(resp) if is_missing(resp.status()) => {
             eprintln!("[webdav] sync: 远端还没有快照（{}），将直接上传本地", resp.status());
-            Vec::new()
+            (Vec::new(), Vec::new(), Vec::new())
         }
         Ok(resp) => {
             return Err(dav_error("下载", resp.status(), &full));
@@ -556,14 +1024,25 @@ fn sync_to_webdav<R: Runtime>(
         Err(e) => return Err(format!("下载请求失败: {e}")),
     };
 
-    let local_fp = fingerprint(&local);
-    let remote_fp = fingerprint(&remote_todos);
+    let local_fp = fingerprint(&local, &local_categories, &local_settings);
+    let remote_fp = fingerprint(&remote_todos, &remote_categories, &remote_settings);
+    let n_local = local.len();
+    let n_remote = remote_todos.len();
     let merged = merge_todos(local, remote_todos);
-    let merged_fp = fingerprint(&merged);
+    let merged_categories = merge_categories(local_categories, remote_categories);
+    let merged_settings = merge_settings(local_settings, remote_settings);
+    let merged_fp = fingerprint(&merged, &merged_categories, &merged_settings);
+    let n_merged = merged.len();
 
     // 两边内容一致（合并结果与双方都相同）→ 一个字节都不用写，也不建目录。
     // 但「上次同步」时间还是要记：手动点按钮时他要能看到时间变了。
     if merged_fp == local_fp && merged_fp == remote_fp {
+        crate::diag::log_line(&format!(
+            "同步无差异，用时 {}ms（本地 {} / 云端 {}）",
+            crate::now_ms() - t_start,
+            n_local,
+            n_remote
+        ));
         set_last_sync(app, now_ms())?;
         return Ok(());
     }
@@ -573,25 +1052,42 @@ fn sync_to_webdav<R: Runtime>(
     ensure_remote_dir(&client, &url, &auth, &remote_path)?;
 
     if merged_fp != local_fp {
-        // 本地落后（或云端有本地没有的条目）→ 写回本地
-        overwrite_local_todos(app, &SyncFile {
-            version: 1,
-            updated_at: now_ms(),
-            todos: merged.clone(),
-        })?;
-        // 后台轮询写库后必须通知前端，否则列表还是旧的（以前只有启动拉取发这个事件）
+        // 本地落后（或云端有本地没有的内容/设置）→ 写回本地
+        overwrite_local_snapshot(
+            app,
+            &SyncFile {
+                version: SYNC_FILE_VERSION,
+                updated_at: now_ms(),
+                todos: merged.clone(),
+                categories: merged_categories.clone(),
+                settings: merged_settings.clone(),
+            },
+        )?;
         let _ = app.emit(
             TODOS_UPDATED_EVENT,
             serde_json::json!({ "ts": now_ms(), "source": "webdav-poll" }),
         );
+        let _ = app.emit(
+            CATEGORIES_UPDATED_EVENT,
+            serde_json::json!({ "ts": now_ms(), "source": "webdav-poll" }),
+        );
+        let _ = app.emit(
+            SETTINGS_UPDATED_EVENT,
+            serde_json::json!({ "ts": now_ms(), "source": "webdav-poll" }),
+        );
+        if let Err(e) = apply_synced_settings(app) {
+            eprintln!("[webdav] 应用同步设置失败: {e}");
+        }
     }
 
     if merged_fp != remote_fp {
         // 云端落后 → 上传合并结果
         let body = serde_json::to_string(&SyncFile {
-            version: 1,
+            version: SYNC_FILE_VERSION,
             updated_at: now_ms(),
             todos: merged,
+            categories: merged_categories,
+            settings: merged_settings,
         })
         .map_err(|e| format!("序列化失败: {e}"))?;
 
@@ -610,6 +1106,15 @@ fn sync_to_webdav<R: Runtime>(
         }
     }
     eprintln!("[webdav] sync: 完成");
+    crate::diag::log_line(&format!(
+        "同步完成，用时 {}ms（本地 {} / 云端 {} → 合并 {}；写本地={} 上传云端={}）",
+        crate::now_ms() - t_start,
+        n_local,
+        n_remote,
+        n_merged,
+        merged_fp != local_fp,
+        merged_fp != remote_fp
+    ));
 
     set_last_sync(app, now_ms())?;
     Ok(())
@@ -617,6 +1122,7 @@ fn sync_to_webdav<R: Runtime>(
 
 /// 从 WebDAV 下载并覆盖本地（手动恢复，危险操作，仅在用户确认后调用）
 fn download_from_webdav<R: Runtime>(app: &AppHandle<R>, ov: Option<&ConfigOverride>) -> Result<(), String> {
+    let _op_restore = crate::diag::op(crate::diag::OP_RESTORE);
     let (url, user, pass, remote_path, _enabled) = get_config(app, ov)?;
 
     let client = build_client()?;
@@ -640,7 +1146,37 @@ fn download_from_webdav<R: Runtime>(app: &AppHandle<R>, ov: Option<&ConfigOverri
     let body = resp.text().map_err(|e| format!("读取响应失败: {e}"))?;
     let sync_file: SyncFile = serde_json::from_str(&body).map_err(|e| format!("解析远端数据失败: {e}"))?;
 
-    overwrite_local_todos(app, &sync_file)?;
+    let settings = if sync_file.settings.is_empty() {
+        read_local_settings(app)?
+    } else {
+        sync_file.settings
+    };
+    let categories = sync_file.categories;
+    overwrite_local_snapshot(
+        app,
+        &SyncFile {
+            version: SYNC_FILE_VERSION,
+            updated_at: sync_file.updated_at,
+            todos: sync_file.todos,
+            categories,
+            settings,
+        },
+    )?;
+    let _ = app.emit(
+        TODOS_UPDATED_EVENT,
+        serde_json::json!({ "ts": now_ms(), "source": "webdav-restore" }),
+    );
+    let _ = app.emit(
+        CATEGORIES_UPDATED_EVENT,
+        serde_json::json!({ "ts": now_ms(), "source": "webdav-restore" }),
+    );
+    let _ = app.emit(
+        SETTINGS_UPDATED_EVENT,
+        serde_json::json!({ "ts": now_ms(), "source": "webdav-restore" }),
+    );
+    if let Err(e) = apply_synced_settings(app) {
+        eprintln!("[webdav] 应用恢复设置失败: {e}");
+    }
     // 恢复后本地内容与云端一致，下一轮轮询的三方指纹比对会自己判出「没差异」，不用另存标记
     set_last_sync(app, now_ms())?;
     Ok(())
@@ -696,9 +1232,9 @@ pub fn startup_pull<R: Runtime>(app: &AppHandle<R>) {
 pub fn start_webdav_sync_poll<R: Runtime>(app: &AppHandle<R>) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        // 启动 10 秒后首轮检查
-        tokio::time::sleep(Duration::from_secs(10)).await;
-
+        // 这个定时器只是**兜底**：接住「别的设备改了、本机一直没动」的情况。
+        // 主路径是前端的「内容变化后 2.5 秒同步」（见 WidgetShell），那条才是该跟手的。
+        // 下面 tick() 先吃掉 tokio interval 的即时一拍，所以第一次兜底落在启动约 1 小时后。
         let mut interval = tokio::time::interval(Duration::from_secs(SYNC_POLL_INTERVAL_SECS));
         interval.tick().await; // 跳过首个即时 tick
 
@@ -817,6 +1353,7 @@ pub struct WebdavTestPayload {
 #[tauri::command]
 pub async fn webdav_test(app: AppHandle, payload: WebdavTestPayload) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let _op_test = crate::diag::op(crate::diag::OP_TEST);
         let url = payload.url.trim();
         let user = payload.user.trim();
         let remote_path = payload.remote_path.unwrap_or_default();
@@ -933,4 +1470,252 @@ pub async fn webdav_status(app: AppHandle) -> Result<WebdavStatus, String> {
     })
     .await
     .map_err(|e| format!("后台任务失败: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn todo(id: &str, update_time: i64, sort_order: f64) -> TodoItemSync {
+        TodoItemSync {
+            id: id.into(),
+            text: format!("待办 {id}"),
+            completed: false,
+            category_id: Some(UNCATEGORIZED_CATEGORY_ID.into()),
+            pinned: false,
+            sort_order,
+            color_id: Some("important".into()),
+            due_date: 0,
+            reminded: false,
+            is_recurring: false,
+            recurrence_type: "none".into(),
+            recurrence_config: String::new(),
+            update_time,
+            create_time: 1,
+            completed_time: 0,
+            deleted: false,
+        }
+    }
+
+    fn setting(key: &str, value: &str, updated_at: i64) -> SettingSync {
+        SettingSync {
+            key: key.into(),
+            value: value.into(),
+            updated_at,
+        }
+    }
+
+    fn category(id: &str, name: &str, sort_order: f64, update_time: i64) -> CategorySync {
+        CategorySync {
+            id: id.into(),
+            name: name.into(),
+            color: None,
+            sort_order,
+            create_time: 1,
+            update_time,
+            deleted: false,
+            system: false,
+        }
+    }
+
+    #[test]
+    fn old_v1_snapshot_without_settings_or_sort_order_still_parses() {
+        let sync: SyncFile = serde_json::from_str(
+            r#"{"version":1,"updated_at":10,"todos":[{"id":"a","text":"旧待办","completed":true}]}"#,
+        )
+        .unwrap();
+        assert!(sync.settings.is_empty());
+        assert!(sync.categories.is_empty());
+        assert_eq!(sync.todos[0].sort_order, 0.0);
+        assert_eq!(sync.todos[0].category_id, None);
+        assert!(sync.todos[0].completed);
+    }
+
+    #[test]
+    fn v2_snapshot_without_categories_section_still_parses() {
+        let sync: SyncFile = serde_json::from_str(
+            r#"{"version":2,"updated_at":20,"todos":[{"id":"a","text":"旧待办","completed":false}],"settings":[]}"#,
+        )
+        .unwrap();
+        assert!(sync.categories.is_empty());
+        assert_eq!(sync.todos.len(), 1);
+    }
+
+    #[test]
+    fn categories_merge_uses_newer_timestamp_and_keeps_tombstone() {
+        let local = vec![
+            category("work", "工作", 1.0, 30),
+            category("life", "生活", 2.0, 10),
+        ];
+        let remote = vec![
+            category("work", "职场", 1.0, 20),
+            CategorySync {
+                deleted: true,
+                update_time: 20,
+                ..category("life", "生活", 2.0, 20)
+            },
+        ];
+        let merged = merge_categories(local, remote);
+        let work = merged.iter().find(|c| c.id == "work").unwrap();
+        assert_eq!(work.name, "工作");
+        let life = merged.iter().find(|c| c.id == "life").unwrap();
+        assert!(life.deleted);
+    }
+
+    #[test]
+    fn system_category_stays_uncategorized_and_sorts_last() {
+        let merged = merge_categories(
+            vec![
+                category("work", "工作", 1.0, 10),
+                CategorySync {
+                    name: "被改过名".into(),
+                    system: true,
+                    ..category(UNCATEGORIZED_CATEGORY_ID, "被改过名", 9.0, 10)
+                },
+            ],
+            Vec::new(),
+        );
+        assert_eq!(merged.last().unwrap().id, UNCATEGORIZED_CATEGORY_ID);
+        assert_eq!(merged.last().unwrap().name, "未分类");
+        assert!(merged.last().unwrap().system);
+    }
+
+    #[test]
+    fn settings_merge_uses_newer_timestamp_and_local_wins_ties() {
+        let local = vec![
+            setting("theme", "dark", 20),
+            setting("showSeconds", "true", 10),
+        ];
+        let remote = vec![
+            setting("theme", "light", 20),
+            setting("showSeconds", "false", 11),
+        ];
+        let merged = merge_settings(local, remote);
+        assert_eq!(merged[0].key, "showSeconds");
+        assert_eq!(merged[0].value, "false");
+        assert_eq!(merged[1].key, "theme");
+        assert_eq!(merged[1].value, "dark");
+    }
+
+    #[test]
+    fn credentials_unknown_keys_and_invalid_values_are_not_synced() {
+        let merged = merge_settings(
+            Vec::new(),
+            vec![
+                setting("webdavEnabled", "true", 10),
+                setting("webdavUrl", "https://example.invalid/dav/", 10),
+                setting("webdavUser", "account", 10),
+                setting("webdavPass", "ciphertext", 10),
+                setting("webdavRemotePath", "/private/file.json", 10),
+                setting("webdavLastSync", "10", 10),
+                setting("theme", "not-a-theme", 10),
+                setting("unknownSetting", "value", 10),
+            ],
+        );
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn half_step_font_sizes_are_accepted_but_other_steps_are_rejected() {
+        assert_eq!(normalize_setting("contentFontSize", "12.5"), Some("12.5".into()));
+        assert_eq!(normalize_setting("contentFontSize", "17"), Some("17".into()));
+        assert_eq!(normalize_setting("contentFontSize", "12.25"), None);
+        assert_eq!(normalize_setting("contentFontSize", "18"), None);
+    }
+
+    #[test]
+    fn todo_snapshot_round_trips_state_and_fractional_sort_order() {
+        let original = TodoItemSync {
+            completed: true,
+            pinned: true,
+            sort_order: 1.5,
+            color_id: Some("urgent".into()),
+            due_date: 123,
+            reminded: true,
+            is_recurring: true,
+            recurrence_type: "weekly".into(),
+            recurrence_config: r#"{"interval":2,"days":[1]}"#.into(),
+            update_time: 50,
+            create_time: 2,
+            completed_time: 40,
+            deleted: true,
+            ..todo("state", 50, 1.5)
+        };
+        let json = serde_json::to_string(&SyncFile {
+            version: SYNC_FILE_VERSION,
+            updated_at: 50,
+            todos: vec![original.clone()],
+            categories: vec![category("work", "工作", 1.5, 40)],
+            settings: Vec::new(),
+        })
+        .unwrap();
+        let restored: SyncFile = serde_json::from_str(&json).unwrap();
+        let state = serde_json::to_value(&restored.todos[0]).unwrap();
+        let expected = serde_json::to_value(&original).unwrap();
+        assert_eq!(state, expected);
+        assert_eq!(restored.categories[0].sort_order, 1.5);
+        assert!(json.contains("\"sort_order\":1.5"));
+    }
+
+    #[test]
+    fn fingerprint_changes_when_only_sort_order_changes() {
+        let first = vec![todo("a", 10, 1.0), todo("b", 10, 2.0)];
+        let mut second = first.clone();
+        second[0].sort_order = 1.5;
+        assert_ne!(fingerprint(&first, &[], &[]), fingerprint(&second, &[], &[]));
+    }
+
+    #[test]
+    fn fingerprint_changes_when_only_a_category_changes() {
+        let todos = vec![todo("a", 10, 1.0)];
+        let settings = vec![setting("theme", "dark", 10)];
+        let first = vec![category("work", "工作", 1.0, 10)];
+        let second = vec![category("work", "工作", 1.0, 11)];
+        assert_ne!(
+            fingerprint(&todos, &first, &settings),
+            fingerprint(&todos, &second, &settings)
+        );
+        assert_ne!(
+            fingerprint(&todos, &[], &settings),
+            fingerprint(&todos, &first, &settings)
+        );
+    }
+
+    #[test]
+    fn category_color_round_trips_and_absent_field_defaults_to_none() {
+        let json = r##"{"version":3,"updated_at":1,"todos":[],"categories":[
+            {"id":"work","name":"工作","color":"#6ee7b7","sort_order":1,"update_time":10,"deleted":false,"system":false},
+            {"id":"life","name":"生活","sort_order":2,"update_time":10}
+        ]}"##;
+        let file: SyncFile = serde_json::from_str(json).unwrap();
+        assert_eq!(file.categories[0].color.as_deref(), Some("#6ee7b7"));
+        assert_eq!(file.categories[1].color, None);
+    }
+
+    #[test]
+    fn category_color_follows_the_newer_side() {
+        let mut newer = category("work", "工作", 1.0, 20);
+        newer.color = Some("#fbbf24".into());
+        let older = category("work", "工作", 1.0, 10);
+
+        let merged = merge_categories(vec![newer.clone()], vec![older.clone()]);
+        assert_eq!(merged[0].color.as_deref(), Some("#fbbf24"));
+
+        let merged = merge_categories(vec![older], vec![newer]);
+        assert_eq!(merged[0].color.as_deref(), Some("#fbbf24"));
+    }
+
+    #[test]
+    fn fingerprint_changes_when_only_a_category_color_changes() {
+        let todos = vec![todo("a", 10, 1.0)];
+        let settings = vec![setting("theme", "dark", 10)];
+        let mut first = category("work", "工作", 1.0, 10);
+        first.color = Some("#6ee7b7".into());
+        let mut second = first.clone();
+        second.color = Some("none".into());
+        assert_ne!(
+            fingerprint(&todos, &[first], &settings),
+            fingerprint(&todos, &[second], &settings)
+        );
+    }
 }

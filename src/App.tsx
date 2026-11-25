@@ -26,12 +26,20 @@ function MainApp() {
   useAppInit(true);
 
   const initialized = useSettingsStore((s) => s.initialized);
+  const autoStart = useSettingsStore((s) => s.autoStart);
   const theme = useSettingsStore((s) => s.theme);
 
   // 绑定 data-theme 到 html 根节点
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!initialized) return;
+    import("@tauri-apps/plugin-autostart")
+      .then(({ enable, disable }) => (autoStart ? enable() : disable()))
+      .catch((e) => console.error("[LiteNote] 应用自启设置失败:", e));
+  }, [initialized, autoStart]);
 
   useEffect(() => {
     if (initialized) {

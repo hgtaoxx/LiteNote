@@ -7,24 +7,14 @@
   --ln-mist: #f5f5f7;
   --ln-silver: #8e8e93;
 
-  /**
-   * 待办「重要程度」色（与 TodoColorId 一一对应，由低到高）。
-   *
-   * 重新设计过：原来的 黄→橙→红 三个色相挤在一起，层级分不出来（用户反馈不好看）。
-   * 现在改用「石板 → 青绿 → 琥珀 → 玫红」四级色阶，色相彼此拉开：
-   *   hollow    空心圆（未标记）—— 只描边不填充
-   *   none      石板灰  —— 低
-   *   attention 青绿    —— 留意
-   *   important 琥珀    —— 重要
-   *   urgent    玫红    —— 紧急
-   * 深色 / 玻璃主题用更亮的 300~400 级，浅色主题用 600~700 级保证对比度。
-   */
+  /* 重要程度由低到高：空心描边 → 蓝 → 青绿 → 琥珀 → 玫红。 */
   --ln-todo-p-hollow: #e5e7eb;
-  --ln-todo-p-none: #cbd5e1;
+  --ln-todo-p-none: #60a5fa;
   --ln-todo-p-none-ink: rgba(255, 255, 255, 0.94);
   --ln-todo-p-attention: #5eead4;
-  --ln-todo-p-important: #fcd34d;
-  --ln-todo-p-urgent: #fda4af;
+  --ln-todo-p-important: #dfff00;
+  --ln-todo-p-important-dot: #fcd34d;
+  --ln-todo-p-urgent: #de2910;
 
   --ln-modal-scrim: rgba(0, 0, 0, 0.4);
   --ln-shadow-card: 0 4px 20px rgba(0, 0, 0, 0.08);
@@ -89,12 +79,13 @@
   --ln-theme-border: #334155;
   --ln-theme-border-light: #1e293b;
 
-  /* 重要程度四级色阶（深色主题用更亮的 400 级；空心圆描边用浅灰，黑色在深底上看不见） */
+  /* 深色主题用更亮的 400 级；空心圆描边用浅灰。 */
   --ln-todo-p-hollow: #e5e7eb;
-  --ln-todo-p-none: #94a3b8;
+  --ln-todo-p-none: #60a5fa;
   --ln-todo-p-attention: #2dd4bf;
-  --ln-todo-p-important: #fbbf24;
-  --ln-todo-p-urgent: #fb7185;
+  --ln-todo-p-important: #dfff00;
+  --ln-todo-p-important-dot: #fbbf24;
+  --ln-todo-p-urgent: #de2910;
   --ln-theme-today: #4ade80;
   --ln-theme-today-bg: rgba(74, 222, 128, 0.1);
   --ln-theme-selected-bg: #334155;
@@ -126,10 +117,11 @@
 
   /* 浅色主题下加深待办颜色，提高圆点 / 完成标记对比度 */
   --ln-todo-p-hollow: #111827;
-  --ln-todo-p-none: #94a3b8;
+  --ln-todo-p-none: #2563eb;
   --ln-todo-p-attention: #0d9488;
-  --ln-todo-p-important: #d97706;
-  --ln-todo-p-urgent: #e11d48;
+  --ln-todo-p-important: #dfff00;
+  --ln-todo-p-important-dot: #d97706;
+  --ln-todo-p-urgent: #de2910;
 }
 
 /* 浅黄主题（琥珀色系，暖） */
@@ -154,10 +146,11 @@
 
   /* 暖底上加深待办颜色，避免黄色圆点"融进背景" */
   --ln-todo-p-hollow: #111827;
-  --ln-todo-p-none: #a8a29e;
+  --ln-todo-p-none: #2563eb;
   --ln-todo-p-attention: #0f766e;
-  --ln-todo-p-important: #b45309;
-  --ln-todo-p-urgent: #be123c;
+  --ln-todo-p-important: #dfff00;
+  --ln-todo-p-important-dot: #b45309;
+  --ln-todo-p-urgent: #de2910;
 }
 
 /* 浅灰主题（中性灰；底色刻意比「浅色」的 #f8fafc 深两档，避免两者看起来一样） */
@@ -183,10 +176,11 @@
 
   /* 底更灰了，待办色也整体压深一档，保证对比度 */
   --ln-todo-p-hollow: #111827;
-  --ln-todo-p-none: #6b7280;
+  --ln-todo-p-none: #2563eb;
   --ln-todo-p-attention: #0f766e;
-  --ln-todo-p-important: #b45309;
-  --ln-todo-p-urgent: #be123c;
+  --ln-todo-p-important: #dfff00;
+  --ln-todo-p-important-dot: #b45309;
+  --ln-todo-p-urgent: #de2910;
 }
 
 /* 浅粉主题（玫粉色系，暖） */
@@ -210,8 +204,9 @@
   --ln-scrollbar-thumb-hover: rgba(190, 24, 93, 0.5);
 
   --ln-todo-p-hollow: #111827;
-  --ln-todo-p-none: #a1a1aa;
+  --ln-todo-p-none: #2563eb;
   --ln-todo-p-attention: #0f766e;
-  --ln-todo-p-important: #b45309;
-  --ln-todo-p-urgent: #be123c;
+  --ln-todo-p-important: #dfff00;
+  --ln-todo-p-important-dot: #b45309;
+  --ln-todo-p-urgent: #de2910;
 }

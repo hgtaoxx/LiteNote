@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { saveSetting } from "@/lib/db";
 import {
   computeFocusWindowHeight,
@@ -44,12 +45,24 @@ export function useFocusWindowSize(
   const fullSizeRef = useRef<WindowLogicalSize>(
     resolveStoredFullSize(fullWindowWidth, fullWindowHeight),
   );
+  const observedFullSizeRef = useRef<WindowLogicalSize>({
+    width: fullWindowWidth,
+    height: fullWindowHeight,
+  });
+  const pendingSyncedSizeRef = useRef(false);
   const didFullRestoreCheck = useRef(false);
 
   // 同步 DB 中的完整模式尺寸（忽略被误写入的专注尺寸 / 膨胀值）
   useEffect(() => {
     if (!settingsReady) return;
     const resolved = resolveStoredFullSize(fullWindowWidth, fullWindowHeight);
+    if (
+      observedFullSizeRef.current.width !== resolved.width ||
+      observedFullSizeRef.current.height !== resolved.height
+    ) {
+      pendingSyncedSizeRef.current = true;
+      observedFullSizeRef.current = resolved;
+    }
     fullSizeRef.current = resolved;
     if (!focusMode) {
       focusWidthRef.current = resolved.width;
@@ -67,6 +80,60 @@ export function useFocusWindowSize(
       });
     }
   }, [settingsReady, fullWindowWidth, fullWindowHeight, focusMode]);
+
+  useEffect(() => {
+    if (!settingsReady || focusMode) return;
+    let disposed = false;
+    let timer: number | null = null;
+    let unlisten: (() => void) | null = null;
+
+    void getCurrentWindow()
+      .onResized(() => {
+        if (timer !== null) window.clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          timer = null;
+          void (async () => {
+            const current = await readWindowInnerSize();
+            if (
+              disposed ||
+              !current ||
+              !isLikelyFullModeSize(current) ||
+              isOversizedFullSize(current)
+            ) {
+              return;
+            }
+            const width = Math.round(current.width);
+            const height = Math.round(current.height);
+            const state = useSettingsStore.getState();
+            if (
+              state.fullWindowWidth === width &&
+              state.fullWindowHeight === height
+            ) {
+              return;
+            }
+            await saveSetting("fullWindowWidth", width);
+            await saveSetting("fullWindowHeight", height);
+            if (!disposed) {
+              useSettingsStore.setState({
+                fullWindowWidth: width,
+                fullWindowHeight: height,
+              });
+            }
+          })();
+        }, 300);
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [settingsReady, focusMode]);
 
   useEffect(() => {
     if (!settingsReady) return;
@@ -94,29 +161,43 @@ export function useFocusWindowSize(
 
       if (focusMode) {
         const entering = wasFocus !== true;
+        let resizedFromSettings = false;
 
-        // 进入专注（启动时就已经是专注也算）：记录完整模式尺寸并调成正方形
         if (entering) {
-          const current = await readWindowInnerSize();
-          if (cancelled) return;
-
-          if (current && isLikelyFullModeSize(current)) {
-            fullSizeRef.current = {
-              width: current.width,
-              height: current.height,
-            };
-            focusWidthRef.current = current.width;
-            await saveSetting("fullWindowWidth", current.width);
-            await saveSetting("fullWindowHeight", current.height);
-            if (cancelled) return;
-            useSettingsStore.setState({
-              fullWindowWidth: current.width,
-              fullWindowHeight: current.height,
-            });
-          } else {
+          if (pendingSyncedSizeRef.current) {
+            pendingSyncedSizeRef.current = false;
             focusWidthRef.current = fullSizeRef.current.width;
+          } else {
+            const current = await readWindowInnerSize();
+            if (cancelled) return;
+
+            if (current && isLikelyFullModeSize(current)) {
+              fullSizeRef.current = {
+                width: current.width,
+                height: current.height,
+              };
+              focusWidthRef.current = current.width;
+              await saveSetting("fullWindowWidth", current.width);
+              await saveSetting("fullWindowHeight", current.height);
+              if (cancelled) return;
+              useSettingsStore.setState({
+                fullWindowWidth: current.width,
+                fullWindowHeight: current.height,
+              });
+            } else {
+              focusWidthRef.current = fullSizeRef.current.width;
+            }
           }
 
+          await setWindowLogicalSize({
+            width: focusWidthRef.current,
+            height: computeFocusWindowHeight(focusWidthRef.current),
+          });
+          if (cancelled) return;
+        } else if (pendingSyncedSizeRef.current) {
+          pendingSyncedSizeRef.current = false;
+          resizedFromSettings = true;
+          focusWidthRef.current = fullSizeRef.current.width;
           await setWindowLogicalSize({
             width: focusWidthRef.current,
             height: computeFocusWindowHeight(focusWidthRef.current),
@@ -131,9 +212,7 @@ export function useFocusWindowSize(
         // 非客户区，把本来被 WebView 完整盖住的标题栏露出来（用户看到的顶部白条）。
         // 「不可调整大小」现在由 Rust 侧的 WM_NCHITTEST 拦截统一负责。
         if (sizeLocked) {
-          if (entering) {
-            // 刚进入：直接锁到上面设好的正方形尺寸。
-            // 不回读窗口尺寸——setSize 刚发出，窗口管理器可能还没应用，回读会拿到旧尺寸。
+          if (entering || resizedFromSettings) {
             await lockWindowSize({
               width: focusWidthRef.current,
               height: computeFocusWindowHeight(focusWidthRef.current),
@@ -182,5 +261,5 @@ export function useFocusWindowSize(
     return () => {
       cancelled = true;
     };
-  }, [focusMode, settingsReady, sizeLocked]);
+  }, [focusMode, settingsReady, sizeLocked, fullWindowWidth, fullWindowHeight]);
 }

@@ -22,6 +22,10 @@ export interface SettingsState {
   contentFontSize: number;
   /** 内容（待办正文）字体 */
   contentFontFamily: ContentFontId;
+  /** 重要程度标记：true 为六字渐变，false 为旧式彩色圆点 */
+  importanceMarkerStyle: boolean;
+  /** 标签：true 显示标签筛选/标记/右键归类，false 全部隐藏 */
+  tagsEnabled: boolean;
   panelOpacity: number;
   localeMode: LocaleMode;
   windowLocked: boolean;
@@ -56,6 +60,8 @@ export interface SettingsActions {
   setWindowLocked: (v: boolean) => void;
   setContentFontSize: (v: number) => void;
   setContentFontFamily: (v: ContentFontId) => void;
+  setImportanceMarkerStyle: (v: boolean) => void;
+  setTagsEnabled: (v: boolean) => void;
   setAutoStart: (v: boolean) => void;
   setEdgeHide: (v: boolean) => void;
   /** 设置钉桌面，返回「是否真的挂上了」（停靠期间只会记下设置） */
@@ -102,19 +108,6 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
     init: async () => {
       const settings = await loadSettings();
       set({ ...settings, initialized: true });
-
-      // 启动时同步 autostart 插件状态与保存的设置
-      if (settings.autoStart) {
-        import("@tauri-apps/plugin-autostart")
-          .then(({ enable }) => {
-            enable().catch((e) =>
-              console.error("[LiteNote] autostart init enable failed:", e),
-            );
-          })
-          .catch((e) =>
-            console.error("[LiteNote] autostart import failed:", e),
-          );
-      }
     },
 
     reloadFromDb: async () => {
@@ -189,15 +182,6 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
 
     setAutoStart: (v) => {
       set({ autoStart: v });
-      // 同步调用 autostart 插件启用/禁用
-      import("@tauri-apps/plugin-autostart").then(({ enable, disable }) => {
-        if (v) {
-          enable().catch((e) => console.error("[LiteNote] autostart enable failed:", e));
-        } else {
-          disable().catch((e) => console.error("[LiteNote] autostart disable failed:", e));
-        }
-      }).catch((e) => console.error("[LiteNote] autostart import failed:", e));
-
       dbWrite(
         saveSetting("autoStart", v),
         "saveSetting(autoStart)",
@@ -282,6 +266,26 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
       dbWrite(
         saveSetting("contentFontFamily", v),
         "saveSetting(contentFontFamily)",
+        (msg) => set({ lastError: msg }),
+        emitSettingsChanged,
+      );
+    },
+
+    setImportanceMarkerStyle: (v) => {
+      set({ importanceMarkerStyle: v });
+      dbWrite(
+        saveSetting("importanceMarkerStyle", v),
+        "saveSetting(importanceMarkerStyle)",
+        (msg) => set({ lastError: msg }),
+        emitSettingsChanged,
+      );
+    },
+
+    setTagsEnabled: (v) => {
+      set({ tagsEnabled: v });
+      dbWrite(
+        saveSetting("tagsEnabled", v),
+        "saveSetting(tagsEnabled)",
         (msg) => set({ lastError: msg }),
         emitSettingsChanged,
       );

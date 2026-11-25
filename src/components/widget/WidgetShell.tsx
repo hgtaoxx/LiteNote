@@ -23,9 +23,14 @@ import { resolveContentFontStack } from "@/lib/contentFonts";
 import { webdavAutoSync } from "@/lib/webdav";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTodoStore } from "@/stores/todoStore";
+import { useCategoryStore } from "@/stores/categoryStore";
+import { UNCATEGORIZED_CATEGORY_ID } from "@/types/todo";
 import type { TodoColorId } from "@/types/todo";
 import { generateExportContent, saveTxt } from "@/lib/exportTodos";
 import { ClockSection } from "./ClockSection";
+import { CategoryManagerModal } from "./CategoryManagerModal";
+import { CategoryBadge } from "./CategoryBadge";
+import { ALL_CATEGORY_ID, swatchColors } from "@/lib/categoryColors";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DatePicker } from "./DatePicker";
 import { FooterBar } from "./FooterBar";
@@ -66,6 +71,10 @@ export function WidgetShell() {
   const setContentFontSize = useSettingsStore((s) => s.setContentFontSize);
   const contentFontFamily = useSettingsStore((s) => s.contentFontFamily);
   const setContentFontFamily = useSettingsStore((s) => s.setContentFontFamily);
+  const importanceMarkerStyle = useSettingsStore((s) => s.importanceMarkerStyle);
+  const setImportanceMarkerStyle = useSettingsStore((s) => s.setImportanceMarkerStyle);
+  const tagsEnabled = useSettingsStore((s) => s.tagsEnabled);
+  const setTagsEnabled = useSettingsStore((s) => s.setTagsEnabled);
   const weekCalendarCollapsed = useSettingsStore((s) => s.weekCalendarCollapsed);
   const setWeekCalendarCollapsed = useSettingsStore((s) => s.setWeekCalendarCollapsed);
   const autoStart = useSettingsStore((s) => s.autoStart);
@@ -79,6 +88,12 @@ export function WidgetShell() {
   const reminderMode = useSettingsStore((s) => s.reminderMode);
   const setReminderMode = useSettingsStore((s) => s.setReminderMode);
   const focusMode = useSettingsStore((s) => s.focusMode);
+  const fullWindowWidth = useSettingsStore((s) => s.fullWindowWidth);
+  const fullWindowHeight = useSettingsStore((s) => s.fullWindowHeight);
+  const shortcutToggleWindow = useSettingsStore((s) => s.shortcutToggleWindow);
+  const shortcutFocusMode = useSettingsStore((s) => s.shortcutFocusMode);
+  const shortcutWindowLock = useSettingsStore((s) => s.shortcutWindowLock);
+  const shortcutDesktopPin = useSettingsStore((s) => s.shortcutDesktopPin);
   const settingsInitialized = useSettingsStore((s) => s.initialized);
   const webdavEnabled = useSettingsStore((s) => s.webdavEnabled);
   const lastSettingsError = useSettingsStore((s) => s.lastError);
@@ -89,6 +104,23 @@ export function WidgetShell() {
   const clearTodoSuccess = useTodoStore((s) => s.clearSuccess);
   const setTodoSuccess = useTodoStore((s) => s.setSuccess);
   const reloadFromDb = useTodoStore((s) => s.reloadFromDb);
+  /** 列表是否已从数据库加载过；自动同步用它区分「加载完成」与「用户改动」 */
+  const todosLoaded = useTodoStore((s) => s.loaded);
+
+  // ── 标签（分类）：左轨只做筛选，增删改集中在管理面板 ──
+  const categories = useCategoryStore((s) => s.categories);
+  const categoriesLoaded = useCategoryStore((s) => s.loaded);
+  const lastCategoryError = useCategoryStore((s) => s.lastError);
+  const addCategory = useCategoryStore((s) => s.addCategory);
+  const renameCategory = useCategoryStore((s) => s.renameCategory);
+  const deleteCategory = useCategoryStore((s) => s.deleteCategory);
+  const moveCategory = useCategoryStore((s) => s.moveCategory);
+  const setCategoryColor = useCategoryStore((s) => s.setCategoryColor);
+  /** 当前筛选：ALL_CATEGORY_ID = 全部，其余为分类 id */
+  const [activeCategory, setActiveCategory] = useState<string>(ALL_CATEGORY_ID);
+  /** 标签开关关掉后一律按「全部」走：筛选、入口、标记同时消失，数据本身不动 */
+  const tagFilter = tagsEnabled ? activeCategory : ALL_CATEGORY_ID;
+  const [showCatManager, setShowCatManager] = useState(false);
 
   // 周日历选中日期（null 表示不筛选）
   const [selectedDate, setSelectedDate] = useState<number | null>(null);
@@ -108,7 +140,7 @@ export function WidgetShell() {
   // 直接获取 setTodoDueDate（拖拽到日历日期时需用）
   const setTodoDueDate = useTodoStore((s) => s.setTodoDueDate);
 
-  const lastError = lastSettingsError || lastTodoError;
+  const lastError = lastSettingsError || lastTodoError || lastCategoryError;
 
   // 错误展示（自动清除）
   useEffect(() => {
@@ -242,27 +274,60 @@ export function WidgetShell() {
   };
 
   /**
-   * WebDAV 自动同步：**内容变化后才触发**，不再定期无脑上传。
+   * WebDAV 自动同步：**内容真的变了才触发**。
    *
-   * 这里只负责"内容变化后稍等一下触发一次"，真正要不要走网络由 Rust 侧的内容
-   * 指纹决定：指纹与上次同步一致就直接返回，一个请求都不发。因此这里的防抖
-   * 即使多触发几次也没有任何网络开销。
+   * 判据用「id + update_time 的签名」，不用数组身份：
+   * 以前是「跳过第一次 effect，之后每次 todos 变化都同步」，可启动时从数据库加载完
+   * 列表会再变一次身份 —— 于是那次**加载**被当成了**改动**，开机必发两次同步
+   * （日志里实测相隔 3.4 秒）。比签名之后，加载只是「第一次拿到签名」，不算变化。
+   *
+   * 顺序上：内容变化 → 这里防抖 2.5 秒 → Rust 先 GET 再按差异决定写本地/传云端。
+   * 定时器只是兜底（本机一直没动时，接住别的设备的改动），间隔 1 小时。
    */
-  const didSkipFirstAutoSync = useRef(false);
+  const settingsSyncSignature = JSON.stringify({
+    clockCollapsed,
+    showSeconds,
+    weekCalendarCollapsed,
+    contentFontSize,
+    contentFontFamily,
+    importanceMarkerStyle,
+    tagsEnabled,
+    panelOpacity,
+    localeMode,
+    windowLocked,
+    autoStart,
+    edgeHide,
+    desktopPin,
+    theme,
+    reminderMode,
+    focusMode,
+    fullWindowWidth,
+    fullWindowHeight,
+    shortcutToggleWindow,
+    shortcutFocusMode,
+    shortcutWindowLock,
+    shortcutDesktopPin,
+  });
+  const lastSyncSignature = useRef<string | null>(null);
+  /** 标签本身（增删改排序）也算内容变化，否则另一台设备看不到新标签 */
+  const categorySyncSignature = categories
+    .map((c) => `${c.id}:${c.name}:${c.color ?? ""}:${c.sortOrder}:${c.updateTime}`)
+    .join("|");
   useEffect(() => {
-    if (!settingsInitialized || !webdavEnabled) return;
-    // 启动时加载数据那一次不算「内容变化」
-    if (!didSkipFirstAutoSync.current) {
-      didSkipFirstAutoSync.current = true;
-      return;
-    }
+    // 没加载完就比签名，第一次拿到的永远是空列表，随后加载完成会被误判成「改动」
+    if (!settingsInitialized || !webdavEnabled || !todosLoaded || !categoriesLoaded) return;
+    // 排序状态也参与；updateTime 记录内容/状态变更，sortOrder 覆盖复制后的重排。
+    const signature = `${todos.map((t) => `${t.id}:${t.updateTime}:${t.sortOrder}`).join("|")}|${categorySyncSignature}|${settingsSyncSignature}`;
+    const prev = lastSyncSignature.current;
+    lastSyncSignature.current = signature;
+    if (prev === null || prev === signature) return;
     const timer = window.setTimeout(() => {
       void webdavAutoSync().catch((e) =>
         console.warn("[LiteNote] WebDAV 自动同步失败:", e),
       );
     }, 2500);
     return () => window.clearTimeout(timer);
-  }, [todos, webdavEnabled, settingsInitialized]);
+  }, [todos, categorySyncSignature, settingsSyncSignature, webdavEnabled, settingsInitialized, todosLoaded, categoriesLoaded]);
 
   /**
    * 贴边隐藏（类似 QQ）—— 前端实现，支持屏幕的左 / 右 / 上三条边。
@@ -820,14 +885,70 @@ export function WidgetShell() {
     [activeDragId, todos],
   );
 
-  // 根据周日历选中日期过滤待办
+  /**
+   * 标签条目：全部 → 自定义标签 → 未分类。
+   * 计数只算进行中，和「全部 = 各标签之和」保持一致。
+   */
+  const railItems = useMemo(() => {
+    const custom = categories.filter((c) => c.id !== UNCATEGORIZED_CATEGORY_ID && !c.system);
+    const system = categories.find((c) => c.id === UNCATEGORIZED_CATEGORY_ID || c.system);
+    const activeTodos = todos.filter((x) => !x.completed);
+    const countOf = (id: string) => activeTodos.filter((x) => x.categoryId === id).length;
+    return [
+      { id: ALL_CATEGORY_ID, name: t(locale, "catAll"), count: activeTodos.length, kind: "all" as const, color: null },
+      ...custom.map((c) => ({ id: c.id, name: c.name, count: countOf(c.id), kind: "custom" as const, color: c.color })),
+      ...(system
+        ? [{
+            id: system.id,
+            name: t(locale, "catUncategorized"),
+            count: countOf(system.id),
+            kind: "system" as const,
+            color: null,
+          }]
+        : []),
+    ];
+  }, [categories, todos, locale]);
+
+  /** 管理面板只列自定义标签，并把实际底色带过去（storedColor 才是库里存的） */
+  const managedItems = useMemo(() => {
+    const colors = swatchColors(railItems);
+    return railItems
+      .filter((x) => x.kind === "custom")
+      .map((x) => ({ ...x, storedColor: x.color, color: colors[x.id] }));
+  }, [railItems]);
+  const systemRailItem = railItems.find((x) => x.kind === "system");
+
+  /** 条目上的标签标记：名字 + 底色，和标签按钮、管理面板同一取色 */
+  const categoryChipById = useMemo(() => {
+    const colors = swatchColors(railItems);
+    const map: Record<string, { name: string; bg: string }> = {};
+    for (const item of railItems) {
+      if (item.kind === "all") continue;
+      map[item.id] = { name: item.name, bg: colors[item.id] };
+    }
+    return map;
+  }, [railItems]);
+
+  /** 右键菜单里的可选项：自定义标签 + 未分类；标签关了就不给（菜单里整排消失） */
+  const menuCategories = useMemo(() => {
+    if (!tagsEnabled) return [];
+    return railItems
+      .filter((x) => x.kind !== "all")
+      .map((x) => ({ id: x.id, name: x.name, bg: categoryChipById[x.id]?.bg ?? "transparent" }));
+  }, [railItems, categoryChipById, tagsEnabled]);
+
+  // 根据周日历选中日期 + 标签过滤待办
   const filteredTodos = useMemo(() => {
-    if (selectedDate === null) return todos;
-    return todos.filter((t) => {
+    const byCategory =
+      tagFilter === ALL_CATEGORY_ID
+        ? todos
+        : todos.filter((x) => x.categoryId === tagFilter);
+    if (selectedDate === null) return byCategory;
+    return byCategory.filter((t) => {
       if (t.dueDate <= 0) return false;
       return t.dueDate >= selectedDate && t.dueDate <= endOfDay(selectedDate);
     });
-  }, [todos, selectedDate]);
+  }, [todos, selectedDate, tagFilter]);
 
   useEffect(() => {
     document.documentElement.lang = locale === "zh-CN" ? "zh-CN" : "en";
@@ -873,9 +994,38 @@ export function WidgetShell() {
   }, []);
 
   // 添加待办时，若当前选中了日期则自动附上截止时间（当天 23:59:59）
+  // 按标签筛选时，新条目直接归进当前标签；「全部」下落到未分类
   const handleAddWithDate = useCallback(() => {
-    handleAdd(selectedDate !== null ? endOfDay(selectedDate) : undefined);
-  }, [handleAdd, selectedDate]);
+    handleAdd(
+      selectedDate !== null ? endOfDay(selectedDate) : undefined,
+      tagFilter === ALL_CATEGORY_ID ? undefined : tagFilter,
+    );
+  }, [handleAdd, selectedDate, tagFilter]);
+
+  /** 管理面板里新建后直接切到该标签，用户马上能看到它在工作 */
+  const handleCategoryAdd = useCallback(
+    (name: string) => {
+      const created = addCategory(name);
+      if (created) setActiveCategory(created.id);
+    },
+    [addCategory],
+  );
+
+  const handleCategoryDelete = useCallback(
+    (id: string) => {
+      deleteCategory(id);
+      setActiveCategory((cur) => (cur === id ? ALL_CATEGORY_ID : cur));
+    },
+    [deleteCategory],
+  );
+
+  // 当前筛选的标签被同步/别的窗口删掉了，回到「全部」，否则列表会一直空着
+  useEffect(() => {
+    if (!categoriesLoaded) return;
+    if (activeCategory === ALL_CATEGORY_ID) return;
+    if (categories.some((c) => c.id === activeCategory)) return;
+    setActiveCategory(ALL_CATEGORY_ID);
+  }, [categories, categoriesLoaded, activeCategory]);
 
   // 导出待办
   const handleExport = useCallback(() => {
@@ -921,10 +1071,15 @@ export function WidgetShell() {
           setSelectedDate(overData.date);
         }
       } else if (activeId !== overId) {
-        reorderTodos(activeId, overId);
+        // 按标签筛选时只在本标签内重排，不能把别的标签的序号一起改了
+        reorderTodos(
+          activeId,
+          overId,
+          tagFilter === ALL_CATEGORY_ID ? undefined : tagFilter,
+        );
       }
     },
-    [setTodoDueDate, reorderTodos, todos],
+    [setTodoDueDate, reorderTodos, todos, tagFilter],
   );
 
   return (
@@ -969,6 +1124,7 @@ export function WidgetShell() {
               focusMode
               locale={locale}
               todos={focusActiveTodos}
+              importanceMarkerStyle={importanceMarkerStyle}
               selectedId={null}
               editingId={null}
               emptyHint={`${t(locale, "focusEmptyHint")}\n${t(locale, "focusModeHint")}`}
@@ -1025,9 +1181,20 @@ export function WidgetShell() {
             />
           ) : null}
 
-          <div className="flex px-2 py-1 select-none">
+          {/* 标签开关开着才有这个入口；关掉就像 1.6.9 一样只剩视图切换 */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex items-center gap-1.5 px-2 py-1 select-none">
+            {tagsEnabled ? (
+              <CategoryBadge
+                locale={locale}
+                items={railItems}
+                activeId={tagFilter}
+                onSelect={setActiveCategory}
+                onManage={() => setShowCatManager(true)}
+              />
+            ) : null}
             <div
-              className="flex w-full items-center gap-0.5 p-0.5"
+              className="flex min-w-0 flex-1 items-center gap-0.5 p-0.5"
               style={{
                 background: "rgba(255,255,255,0.05)",
                 borderRadius: "5px",
@@ -1040,7 +1207,7 @@ export function WidgetShell() {
                     key={view}
                     type="button"
                     onClick={() => setTodoView(view)}
-                    className="flex-1 px-1.5 py-0 text-[9px] transition-colors"
+                    className="flex-1 px-1 py-0 text-[9px] transition-colors"
                     style={{
                       color: active
                         ? "var(--ln-theme-text)"
@@ -1050,6 +1217,7 @@ export function WidgetShell() {
                         ? "var(--ln-theme-surface-active)"
                         : "transparent",
                       borderRadius: "4px",
+                      whiteSpace: "nowrap",
                     }}
                   >
                     {t(locale, view === "active" ? "viewActive" : "viewCompleted")}
@@ -1087,14 +1255,15 @@ export function WidgetShell() {
             todos={filteredTodos}
             todoView={todoView}
             sorting={sorting}
+            importanceMarkerStyle={importanceMarkerStyle}
             selectedId={selectedId}
             editingId={editingId}
             emptyHint={
               selectedDate !== null
-                ? locale === "zh-CN"
-                  ? "该日期暂无待办"
-                  : "No tasks for this day"
-                : t(locale, "emptyHint")
+                ? t(locale, "emptyByDate")
+                : tagFilter !== ALL_CATEGORY_ID
+                  ? t(locale, "catEmpty")
+                  : t(locale, "emptyHint")
             }
             onSelect={handleSelect}
             onStartEdit={handleStartEdit}
@@ -1103,7 +1272,11 @@ export function WidgetShell() {
             onChangeText={updateTodoText}
             onEndEdit={handleEndEdit}
             onToggleCompleted={toggleCompleted}
+            categoryChipById={
+              tagsEnabled && tagFilter === ALL_CATEGORY_ID ? categoryChipById : null
+            }
           />
+          </div>
 
           {/* 拖拽预览：显示待办内容 */}
           <DragOverlay dropAnimation={null}>
@@ -1148,7 +1321,27 @@ export function WidgetShell() {
           onSetContentFontSize={setContentFontSize}
           contentFontFamily={contentFontFamily}
           onSetContentFontFamily={setContentFontFamily}
+          importanceMarkerStyle={importanceMarkerStyle}
+          onSetImportanceMarkerStyle={setImportanceMarkerStyle}
+          tagsEnabled={tagsEnabled}
+          onSetTagsEnabled={setTagsEnabled}
           onClose={() => setShowSettings(false)}
+        />
+        <CategoryManagerModal
+          open={showCatManager && tagsEnabled}
+          locale={locale}
+          items={managedItems}
+          systemItem={
+            systemRailItem
+              ? { name: systemRailItem.name, count: systemRailItem.count }
+              : null
+          }
+          onClose={() => setShowCatManager(false)}
+          onAdd={handleCategoryAdd}
+          onRename={renameCategory}
+          onSetColor={setCategoryColor}
+          onDelete={handleCategoryDelete}
+          onMove={moveCategory}
         />
         </div>
         </div>
@@ -1163,12 +1356,17 @@ export function WidgetShell() {
           pinned={menuTodo.pinned}
           dueDate={menuTodo.dueDate}
           isRecurring={menuTodo.isRecurring}
+          importanceMarkerStyle={importanceMarkerStyle}
           onClose={handleCloseMenu}
           onPin={menuActions.onPin}
           onStartSort={handleStartSort}
           onDelete={menuActions.onDelete}
           onToggleDone={menuActions.onToggleDone}
           onPickColor={(c: TodoColorId) => menuActions.onPickColor(c)}
+          categoryId={menuTodo.categoryId}
+          categories={menuCategories}
+          onPickCategory={menuActions.onPickCategory}
+          onCreateCategory={menuActions.onCreateCategory}
           onOpenCustomDueDate={menuActions.onOpenCustomDueDate}
           onClearDueDate={menuActions.onClearDueDate}
           onSetRecurrence={menuActions.onSetRecurrence}

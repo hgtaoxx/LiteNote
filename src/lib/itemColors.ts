@@ -16,6 +16,18 @@ export const COLOR_DOT_STYLE: Record<TodoColorId, CSSProperties> = {
   },
   none: { background: "var(--ln-todo-p-none)" },
   attention: { background: "var(--ln-todo-p-attention)" },
-  important: { background: "var(--ln-todo-p-important)" },
+  important: { background: "var(--ln-todo-p-important-dot)" },
   urgent: { background: "var(--ln-todo-p-urgent)" },
+};
+
+/** 右键色板跟随当前标记样式：新式用荧光黄，旧式用原琥珀色。 */
+export const MARKER_COLOR_DOT_STYLE: Record<
+  "legacy" | "gradient",
+  Record<TodoColorId, CSSProperties>
+> = {
+  legacy: COLOR_DOT_STYLE,
+  gradient: {
+    ...COLOR_DOT_STYLE,
+    important: { background: "var(--ln-todo-p-important)" },
+  },
 };

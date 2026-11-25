@@ -7,7 +7,7 @@ use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, LogicalPosition, Manager, PhysicalPosition, PhysicalSize, Runtime,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Runtime,
     WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 #[cfg(target_os = "macos")]
@@ -18,6 +18,7 @@ use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 mod webdav;
+mod diag;
 
 /// 提醒提前量（毫秒），默认 15 分钟
 const REMIND_ADVANCE_MS: i64 = 15 * 60 * 1000;
@@ -35,6 +36,9 @@ pub(crate) const SETTINGS_UPDATED_EVENT: &str = "litenote-settings-updated";
 /// 待办数据变化（前端 todoStore 已在监听这个名字，带 source 去重）。
 /// 提醒窗口弹窗操作后就是发这个事件让主窗口重新读库的。
 pub(crate) const TODOS_UPDATED_EVENT: &str = "litenote-todos-updated";
+
+/// 分类数据变化。删除分类会连带移动待办，所以 Rust 同步时和待办事件一起发出。
+pub(crate) const CATEGORIES_UPDATED_EVENT: &str = "litenote-categories-updated";
 
 /// 毫秒时间戳 → 本地时区的日历时间。
 ///
@@ -611,13 +615,39 @@ pub(crate) fn read_setting_bool(conn: &Connection, key: &str, default: bool) -> 
     .unwrap_or(default)
 }
 
+pub(crate) fn ensure_settings_updated_at(conn: &Connection) -> Result<(), String> {
+    let has_column: bool = conn
+        .prepare("PRAGMA table_info(settings)")
+        .and_then(|mut stmt| {
+            let mut rows = stmt.query([])?;
+            let mut found = false;
+            while let Some(row) = rows.next()? {
+                if row.get::<_, String>(1)? == "updated_at" {
+                    found = true;
+                    break;
+                }
+            }
+            Ok(found)
+        })
+        .map_err(|e| format!("检查设置表结构失败: {e}"))?;
+    if !has_column {
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .map_err(|e| format!("升级设置表失败: {e}"))?;
+    }
+    Ok(())
+}
+
 fn write_setting_bool<R: Runtime>(app: &AppHandle<R>, key: &str, value: bool) -> Result<(), String> {
     let db_path = litenote_db_path(app).ok_or_else(|| "无法获取数据库路径".to_string())?;
     let conn = open_db(&db_path)?;
+    ensure_settings_updated_at(&conn)?;
     let json = if value { "true" } else { "false" };
     conn.execute(
-        "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        rusqlite::params![key, json],
+        "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        rusqlite::params![key, json, now_ms()],
     )
     .map_err(|e| format!("写入设置失败: {e}"))?;
     Ok(())
@@ -715,6 +745,7 @@ fn build_tray_menu<R: Runtime>(
 }
 
 fn rebuild_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let _op_tray = diag::op(diag::OP_TRAY);
     let focus_mode = read_focus_mode(app);
     let window_locked = read_window_locked(app);
     let menu = build_tray_menu(app, focus_mode, window_locked)?;
@@ -769,6 +800,7 @@ fn disable_native_context_menu<R: Runtime>(_app: &AppHandle<R>) {}
    ──────────────────────────────────────────────────────────────── */
 
 fn apply_focus_mode<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
+    let _op_focus = diag::op(diag::OP_FOCUS);
     write_setting_bool(app, "focusMode", enabled)?;
     // 切模式时前端会调 setResizable（会把标题栏样式带回来），这里顺手再收敛一次
     apply_window_lock_effects(app);
@@ -898,6 +930,7 @@ fn refresh_window_lock<R: Runtime>(app: AppHandle<R>) {
 /// 但界面一切照常 —— 按钮能点、内容能改、能滚动。
 /// 实现见上面的 lock_wndproc：只拦命中测试，不动窗口样式。
 fn apply_window_lock<R: Runtime>(app: &AppHandle<R>, locked: bool) -> Result<(), String> {
+    let _op_lock = diag::op(diag::OP_LOCK);
     write_setting_bool(app, "windowLocked", locked)?;
     apply_window_lock_effects(app);
     rebuild_tray_menu(app).map_err(|e| format!("更新托盘菜单失败: {e}"))?;
@@ -1294,6 +1327,7 @@ static PIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 按「设置开启 且 当前没停靠」施加钉桌面，返回实际挂上没有。
 /// 设置改动、停靠变化、拖动结束、开机恢复都收敛到这一个函数里。
 fn sync_desktop_pin<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let _op_pin_sync = diag::op(diag::OP_SYNC_PIN);
     let _guard = PIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let want = read_desktop_pinned(app) && !is_docked();
     #[cfg(windows)]
@@ -1306,10 +1340,14 @@ fn sync_desktop_pin<R: Runtime>(app: &AppHandle<R>) -> bool {
             // 它那次 SWP_FRAMECHANGED 也落在挂父窗口之前；之后无论谁重算 ex 样式都带着
             // 这两一位，而 pin 内部这次改样式变成幂等，不再多一次 SetWindowPos。
             mark_passthrough_in_tao(app, true);
-            if !desktop_pin::pin(hwnd) {
-                mark_passthrough_in_tao(app, false);
+            {
+                let _op = diag::op(diag::OP_PIN);
+                if !desktop_pin::pin(hwnd) {
+                    mark_passthrough_in_tao(app, false);
+                }
             }
         } else {
+            let _op = diag::op(diag::OP_UNPIN);
             desktop_pin::unpin(hwnd);
             mark_passthrough_in_tao(app, false);
         }
@@ -1378,6 +1416,7 @@ fn get_desktop_pin_state() -> bool {
 /// 只挂起，不改设置值 —— 解除停靠后自动挂回，用户不用重新点一次。
 #[tauri::command]
 fn set_dock_state(app: AppHandle, active: bool) -> Result<bool, String> {
+    let _op_dock = diag::op(diag::OP_DOCK);
     let was = is_docked();
     DOCKED.store(active, std::sync::atomic::Ordering::Relaxed);
     let applied = sync_desktop_pin(&app);
@@ -1463,6 +1502,7 @@ fn show_reminder_window<R: Runtime>(app: &AppHandle<R>, row: &ReminderRow) {
 
     match result {
         Ok(win) => {
+            let _op_popup = diag::op(diag::OP_REMIND_POPUP);
             // 尺寸/位置都按面板实际几何定，再显示，避免闪一下
             let _ = win.set_size(PhysicalSize::new(w, h));
             let _ = win.set_position(PhysicalPosition::new(x, y));
@@ -1494,7 +1534,7 @@ fn show_reminder_window<R: Runtime>(app: &AppHandle<R>, row: &ReminderRow) {
                 let _ = win.show();
             }
 
-            println!("[LiteNote] 提醒弹窗已创建: label={}", label);
+            diag::log_line(&format!("提醒弹窗已创建 label={}", label));
         }
         Err(e) => {
             eprintln!("[LiteNote] 创建提醒弹窗失败: {e}");
@@ -1547,11 +1587,11 @@ fn check_and_notify(app: &AppHandle, db_path: &std::path::Path) {
     // 1. 提醒检查
     let rows = query_due_reminders(&conn, now);
     if !rows.is_empty() {
-        println!(
-            "[LiteNote] 发现 {} 条待办需要提醒 (mode={})",
+        diag::log_line(&format!(
+            "发现 {} 条待办需要提醒 (mode={})",
             rows.len(),
             reminder_mode
-        );
+        ));
         for row in &rows {
             match reminder_mode.as_str() {
                 "system" => {
@@ -1645,8 +1685,37 @@ fn reminder_action(
 }
 
 /// 前端隐藏窗口时调用：保存窗口状态再隐藏
+/// 自检用：把主线程 park 若干秒，用来验证「看门狗 + 操作标记」真的能落进日志。
+///
+/// 诊断代码不验证就交出去，很可能本身就是死的：先用它证明不加看门狗时日志里
+/// 什么都没有，再加回来验通过。发布版（非 debug 构建）直接拒绝执行。
+#[tauri::command]
+fn diag_block_main(app: AppHandle, secs: u64, op: usize) -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("diag_block_main 只在调试版可用".into());
+    }
+    let secs = secs.clamp(1, 30);
+    app.run_on_main_thread(move || {
+        // 故意在主线程里睡：等价于「主线程卡在某个调用里不返回」
+        let _op = diag::op(op);
+        std::thread::sleep(Duration::from_secs(secs));
+    })
+    .map_err(|e| format!("投递到主线程失败: {e}"))
+}
+
+/// 自检用（只在调试版生效）：故意抛一个 panic，验证两件事——
+/// ① 进程不再被打死（去掉 panic=abort 之后）；② panic 的原文与位置进了 run.log。
+#[tauri::command]
+fn diag_panic() -> Result<(), String> {
+    if !cfg!(debug_assertions) {
+        return Err("diag_panic 只在调试版可用".into());
+    }
+    panic!("自检：故意 panic @ {}", crate::now_ms());
+}
+
 #[tauri::command]
 fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    let _op_hide = diag::op(diag::OP_HIDE);
     let flags = if read_focus_mode(&app) {
         // 专注模式不写 SIZE，避免下次完整模式恢复到矮窗口
         StateFlags::POSITION
@@ -1679,6 +1748,35 @@ fn update_shortcuts(app: AppHandle) -> Result<(), String> {
         .unregister_all()
         .map_err(|e| format!("取消注册快捷键失败: {e}"))?;
     register_all_shortcuts(&app)
+}
+
+pub(crate) fn apply_synced_settings<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    apply_window_lock_effects(app);
+    let _ = sync_desktop_pin(app);
+    rebuild_tray_menu(app).map_err(|e| format!("刷新托盘菜单失败: {e}"))?;
+    app.global_shortcut()
+        .unregister_all()
+        .map_err(|e| format!("取消注册快捷键失败: {e}"))?;
+    register_all_shortcuts(app)?;
+
+    if !read_focus_mode(app) {
+        let width = read_setting_string_app(app, "fullWindowWidth", "360")
+            .parse::<f64>()
+            .unwrap_or(360.0);
+        let height = read_setting_string_app(app, "fullWindowHeight", "620")
+            .parse::<f64>()
+            .unwrap_or(620.0);
+        if (200.0..=720.0).contains(&width) && (300.0..=1240.0).contains(&height) {
+            let window_app = app.clone();
+            app.run_on_main_thread(move || {
+                if let Some(window) = window_app.get_webview_window("main") {
+                    let _ = window.set_size(LogicalSize::new(width, height));
+                }
+            })
+            .map_err(|e| format!("应用面板尺寸失败: {e}"))?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn now_ms() -> i64 {
@@ -1727,6 +1825,7 @@ fn register_all_shortcuts<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> 
     const D_LOCK: &str = "CmdOrCtrl+Shift+P";
     const D_DESKTOP_PIN: &str = "CmdOrCtrl+Shift+D";
 
+    let _op_sc = diag::op(diag::OP_SHORTCUTS);
     let (toggle_window, toggle_focus, toggle_lock, toggle_pin) = match litenote_db_path(app) {
         Some(db_path) if db_path.exists() => match Connection::open(&db_path) {
             Ok(conn) => (
@@ -1865,6 +1964,7 @@ fn tray_image<R: Runtime>(app: &AppHandle<R>) -> Image<'static> {
 }
 
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+    let _op_show = diag::op(diag::OP_SHOW);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
@@ -2038,7 +2138,35 @@ fn start_edge_hide_poll<R: Runtime>(app: &AppHandle<R>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    /*
+      panic 不再由 `panic = "abort"` 直接打死，改回默认 unwind，同时装这个 hook。
+
+      实测结论（别照着直觉改）：unwind **救不了命令处理路径**——Tauri 的 IPC 回调是
+      `extern "C"` 边界，panic 走到边界会变成
+      「panic in a function that cannot unwind」，进程照样终止。
+      真正有价值的是 hook 本身：它会在终止之前把 panic 的**文件与行号**写进 run.log，
+      于是事件日志里那条光有偏移的 0xc0000409，从此有了出处。
+      unwind 的好处只在可 unwind 的地方（tokio 任务、spawn_blocking 里的 panic 会被
+      JoinError 吃掉，不会带走整个进程）。
+    */
+    std::panic::set_hook(Box::new(|info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "位置未知".to_string());
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "（无消息）".to_string());
+        diag::log_line(&format!("PANIC @ {}：{}", loc, payload));
+    }));
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         .invoke_handler(tauri::generate_handler![
             reminder_action,
             reminder_fit,
@@ -2058,6 +2186,8 @@ pub fn run() {
             webdav::webdav_sync_now,
             webdav::webdav_restore,
             webdav::webdav_status,
+            diag_block_main,
+            diag_panic,
         ])
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_sql::Builder::new().build())
@@ -2156,6 +2286,11 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // 诊断：先把日志目录备好，再起心跳看门狗。
+            // 发布版没有控制台，出问题只能靠这份 run.log 说话，所以必须排在其它启动逻辑之前。
+            diag::init(app.handle());
+            diag::start_heartbeat(app.handle());
 
             // 启动 Rust 端后台提醒轮询（独立于前端，macOS 窗口隐藏时也能可靠运行）
             start_rust_reminder_poll(app.handle());

@@ -1,5 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { TodoItem } from "@/types/todo";
+import { UNCATEGORIZED_CATEGORY_ID, type CategoryItem, type TodoItem } from "@/types/todo";
 import type { LocaleMode } from "@/i18n";
 import type { ContentFontId } from "@/lib/contentFonts";
 
@@ -34,6 +34,10 @@ export const DEFAULT_SETTINGS = {
   contentFontSize: 14,
   /** 内容（待办正文）字体 —— 界面固定使用默认字体，不跟随 */
   contentFontFamily: "system" as ContentFontId,
+  /** true：正文开头六字渐变；false：左侧彩色圆点 */
+  importanceMarkerStyle: true,
+  /** true：显示标签筛选、标签标记与右键归类；false：完全回到无标签的显示 */
+  tagsEnabled: true,
   panelOpacity: 0.88,
   localeMode: "system" as LocaleMode,
   /**
@@ -77,6 +81,8 @@ export interface AppSettings {
   readonly weekCalendarCollapsed: boolean;
   readonly contentFontSize: number;
   readonly contentFontFamily: ContentFontId;
+  readonly importanceMarkerStyle: boolean;
+  readonly tagsEnabled: boolean;
   readonly panelOpacity: number;
   readonly localeMode: LocaleMode;
   readonly windowLocked: boolean;
@@ -128,6 +134,7 @@ export function isDbAvailable(): boolean {
 const EXPECTED_TODO_COLUMNS: Array<{ name: string; def: string }> = [
   { name: "id",           def: "TEXT PRIMARY KEY" },
   { name: "text",         def: "TEXT NOT NULL DEFAULT ''" },
+  { name: "category_id",  def: "TEXT NOT NULL DEFAULT 'uncategorized'" },
   { name: "color_id",     def: "TEXT NOT NULL DEFAULT 'none'" },
   { name: "pinned",       def: "INTEGER NOT NULL DEFAULT 0" },
   { name: "completed",    def: "INTEGER NOT NULL DEFAULT 0" },
@@ -179,11 +186,39 @@ async function initTables(db: Database): Promise<void> {
     )
   `);
 
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS categories (
+      id          TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      color       TEXT,
+      sort_order  REAL NOT NULL DEFAULT 0,
+      create_time INTEGER NOT NULL DEFAULT 0,
+      update_time INTEGER NOT NULL DEFAULT 0,
+      deleted     INTEGER NOT NULL DEFAULT 0,
+      system      INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+
   // 2. 自动补齐缺失列（老库升级用，不影响已有数据）
   await ensureColumns(db);
 
+  /*
+    系统默认项必须永远存在：云端 v2 快照、老库首次升级、同步恢复都可能在
+    categories 为空时写入待办。这里不补一行，所有未分类条目就没有可归属的目标。
+  */
+  const now = Date.now();
+  await db.execute(
+    `INSERT INTO categories (id,name,sort_order,create_time,update_time,deleted,system)
+     VALUES ($1,'未分类',0,$2,$2,0,1)
+     ON CONFLICT(id) DO UPDATE SET name='未分类', system=1, deleted=0`,
+    [UNCATEGORIZED_CATEGORY_ID, now],
+  );
+
   // 3. 清掉过期墓碑（保留窗口见 TOMBSTONE_RETENTION_MS）
   await db.execute("DELETE FROM todos WHERE deleted=1 AND update_time < $1", [
+    Date.now() - TOMBSTONE_RETENTION_MS,
+  ]);
+  await db.execute("DELETE FROM categories WHERE deleted=1 AND update_time < $1", [
     Date.now() - TOMBSTONE_RETENTION_MS,
   ]);
 
@@ -208,6 +243,29 @@ async function ensureColumns(db: Database): Promise<void> {
       );
     }
   }
+
+  const settingRows = await db.select<Array<{ name: string }>>(
+    "PRAGMA table_info(settings)",
+  );
+  if (!settingRows.some((r) => r.name === "updated_at")) {
+    await db.execute(
+      "ALTER TABLE settings ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+    );
+  }
+
+  const categoryRows = await db.select<Array<{ name: string }>>(
+    "PRAGMA table_info(categories)",
+  );
+  for (const col of [
+    { name: "color", def: "TEXT" },
+    { name: "sort_order", def: "REAL NOT NULL DEFAULT 0" },
+    { name: "deleted", def: "INTEGER NOT NULL DEFAULT 0" },
+    { name: "system", def: "INTEGER NOT NULL DEFAULT 0" },
+  ]) {
+    if (!categoryRows.some((r) => r.name === col.name)) {
+      await db.execute(`ALTER TABLE categories ADD COLUMN ${col.name} ${col.def}`);
+    }
+  }
 }
 
 // ──────────────── Todo CRUD ────────────────
@@ -218,6 +276,7 @@ export async function loadTodos(): Promise<TodoItem[]> {
     Array<{
       id: string;
       text: string;
+      category_id?: string | null;
       color_id: string;
       pinned: number;
       completed: number;
@@ -231,10 +290,13 @@ export async function loadTodos(): Promise<TodoItem[]> {
       recurrence_type: string;
       recurrence_config: string;
     }>
-  >("SELECT * FROM todos WHERE deleted = 0 ORDER BY sort_order ASC, update_time DESC");
+  >(
+    "SELECT * FROM todos WHERE deleted = 0 ORDER BY sort_order ASC, create_time ASC, id ASC",
+  );
   return rows.map((r) => ({
     id: r.id,
     text: r.text,
+    categoryId: r.category_id || UNCATEGORIZED_CATEGORY_ID,
     colorId: r.color_id as TodoItem["colorId"],
     pinned: !!r.pinned,
     completed: !!r.completed,
@@ -253,11 +315,12 @@ export async function loadTodos(): Promise<TodoItem[]> {
 export async function insertTodo(item: TodoItem): Promise<void> {
   const db = await getDb();
   await db.execute(
-    `INSERT INTO todos (id,text,color_id,pinned,completed,completed_time,sort_order,create_time,update_time,due_date,reminded,is_recurring,recurrence_type,recurrence_config)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    `INSERT INTO todos (id,text,category_id,color_id,pinned,completed,completed_time,sort_order,create_time,update_time,due_date,reminded,is_recurring,recurrence_type,recurrence_config)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [
       item.id,
       item.text,
+      item.categoryId || UNCATEGORIZED_CATEGORY_ID,
       item.colorId,
       item.pinned ? 1 : 0,
       item.completed ? 1 : 0,
@@ -277,10 +340,11 @@ export async function insertTodo(item: TodoItem): Promise<void> {
 export async function updateTodo(item: TodoItem): Promise<void> {
   const db = await getDb();
   await db.execute(
-    `UPDATE todos SET text=$2,color_id=$3,pinned=$4,completed=$5,completed_time=$6,sort_order=$7,update_time=$8,due_date=$9,reminded=$10,is_recurring=$11,recurrence_type=$12,recurrence_config=$13 WHERE id=$1`,
+    `UPDATE todos SET text=$2,category_id=$3,color_id=$4,pinned=$5,completed=$6,completed_time=$7,sort_order=$8,update_time=$9,due_date=$10,reminded=$11,is_recurring=$12,recurrence_type=$13,recurrence_config=$14 WHERE id=$1`,
     [
       item.id,
       item.text,
+      item.categoryId || UNCATEGORIZED_CATEGORY_ID,
       item.colorId,
       item.pinned ? 1 : 0,
       item.completed ? 1 : 0,
@@ -306,6 +370,88 @@ export async function removeTodo(id: string): Promise<void> {
 export async function clearCompletedTodos(): Promise<void> {
   const db = await getDb();
   await db.execute("UPDATE todos SET deleted=1, update_time=$1 WHERE completed=1 AND deleted=0", [Date.now()]);
+}
+
+// ──────────────── Category CRUD ────────────────
+
+export async function loadCategories(): Promise<CategoryItem[]> {
+  const db = await getDb();
+  const rows = await db.select<
+    Array<{
+      id: string;
+      name: string;
+      color: string | null;
+      sort_order: number;
+      create_time: number;
+      update_time: number;
+      system: number;
+    }>
+  >(
+    "SELECT id,name,color,sort_order,create_time,update_time,system FROM categories WHERE deleted=0 ORDER BY sort_order ASC, create_time ASC, id ASC",
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    color: r.color || null,
+    sortOrder: r.sort_order,
+    createTime: r.create_time,
+    updateTime: r.update_time,
+    system: !!r.system,
+  }));
+}
+
+export async function insertCategory(category: CategoryItem): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `INSERT INTO categories (id,name,color,sort_order,create_time,update_time,deleted,system)
+     VALUES ($1,$2,$3,$4,$5,$6,0,$7)
+     ON CONFLICT(id) DO UPDATE SET name=excluded.name, color=excluded.color, sort_order=excluded.sort_order,
+       create_time=excluded.create_time, update_time=excluded.update_time,
+       deleted=0, system=excluded.system`,
+    [
+      category.id,
+      category.name,
+      category.color,
+      category.sortOrder,
+      category.createTime,
+      category.updateTime,
+      category.system ? 1 : 0,
+    ],
+  );
+}
+
+export async function updateCategory(category: CategoryItem): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `UPDATE categories SET name=$2, color=$3, sort_order=$4, update_time=$5, deleted=0, system=$6 WHERE id=$1`,
+    [
+      category.id,
+      category.name,
+      category.color,
+      category.sortOrder,
+      category.updateTime,
+      category.system ? 1 : 0,
+    ],
+  );
+}
+
+/**
+ * 删除自定义分类。
+ *
+ * 待办绝不能跟着消失：先批量迁回「未分类」并刷新 update_time，让删除动作能同步到
+ * 其它设备；随后给分类打墓碑，避免云端上一轮留下的活分类又被 last-write-wins 复活。
+ */
+export async function removeCategory(id: string): Promise<void> {
+  const db = await getDb();
+  const now = Date.now();
+  await db.execute(
+    "UPDATE todos SET category_id=$2, update_time=$3 WHERE category_id=$1 AND deleted=0",
+    [id, UNCATEGORIZED_CATEGORY_ID, now],
+  );
+  await db.execute(
+    "UPDATE categories SET deleted=1, update_time=$2 WHERE id=$1",
+    [id, now],
+  );
 }
 
 // ──────────────── Settings CRUD ────────────────
@@ -343,7 +489,7 @@ export async function saveSetting<K extends keyof AppSettings>(
 ): Promise<void> {
   const db = await getDb();
   await db.execute(
-    `INSERT INTO settings (key,value) VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
-    [key, typeof value === "string" ? value : JSON.stringify(value)],
+    `INSERT INTO settings (key,value,updated_at) VALUES ($1,$2,$3) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+    [key, typeof value === "string" ? value : JSON.stringify(value), Date.now()],
   );
 }
